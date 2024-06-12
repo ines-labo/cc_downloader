@@ -26,9 +26,6 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module='bs4')
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
 warnings.filterwarnings("ignore", module='bs4')
 
-# TBD
-hf_token = os.environ.get("HF_TOKEN", "")
-
 # 実行時引数の設定
 parser = argparse.ArgumentParser(description='Process WARC files.')
 parser.add_argument('--working_dir', type=str, help='Path to the working_dir.')
@@ -46,9 +43,9 @@ dataset_dir = args.dataset_dir
 
 # データセットのロード
 try:
-    ja_soup_list = load_from_disk(dataset_dir).to_list()
+    refined_common_crawl = load_from_disk(dataset_dir).to_list()
 except Exception:
-    ja_soup_list = []
+    refined_common_crawl = []
 
 # warc.pathsファイルの読み込み
 # これによって全てのwarcファイルの名前が分かる
@@ -198,7 +195,7 @@ def signal_handler(sig, frame):
 
         # 結果を結合
         for result in results:
-            ja_soup_list.extend(result[3])
+            refined_common_crawl.extend(result[3])
             if result[0]:
                 # もし処理が成功していたら処理済みファイル名に追加し、処理途中の進捗データから削除
                 processed_file_names.append(result[1])
@@ -209,7 +206,7 @@ def signal_handler(sig, frame):
                 last_itr_counts[result[1]] = result[2]
 
         # データセットに保存
-        dataset = Dataset.from_list(ja_soup_list)
+        dataset = Dataset.from_list(refined_common_crawl)
         dataset.save_to_disk(dataset_dir)
 
         # 進捗データの保存
@@ -221,8 +218,6 @@ def signal_handler(sig, frame):
     executor.shutdown(wait=True)
 
 try:
-    # TBD
-    iteration = 0
     warc_with_info = []
 
     # 各warcファイルに対して、どのイテレーション回数まで処理が進んでいるかの情報を付与
@@ -255,7 +250,7 @@ except Exception as e:
 finally:
     # 結果を結合
     for result in results:
-        ja_soup_list.extend(result[3])
+        refined_common_crawl.extend(result[3])
         if result[0]:
             # もし処理が成功していたら処理済みファイル名に追加し、処理途中の進捗データから削除
             processed_file_names.append(result[1])
@@ -266,7 +261,7 @@ finally:
             last_itr_counts[result[1]] = result[2]
 
     # データセットに保存
-    dataset = Dataset.from_list(ja_soup_list)
+    dataset = Dataset.from_list(refined_common_crawl)
     print("Saving...")
     dataset.save_to_disk(dataset_dir)
 
