@@ -22,7 +22,6 @@ import warnings
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module='bs4')
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
-warnings.filterwarnings("ignore", module='bs4')
 
 hf_token = os.environ.get("HF_TOKEN", "")
 
