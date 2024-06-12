@@ -24,7 +24,6 @@ import warnings
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module='bs4')
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
-warnings.filterwarnings("ignore", module='bs4')
 
 # 実行時引数の設定
 parser = argparse.ArgumentParser(description='Process WARC files.')
