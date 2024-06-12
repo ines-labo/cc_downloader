@@ -1,7 +1,6 @@
 FROM python:3.10
 LABEL authors="sakusakumura"
 
-# 必要なパッケージをインストール
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -20,4 +19,4 @@ RUN pip install --upgrade setuptools
 
 RUN pip install -r /root/requirements.txt
 
-ENTRYPOINT ["python3", "./src/openwarc_parallel.py", "--working_dir=./src"]
+ENTRYPOINT ["python3", "src/openwarc_parallel.py", "--working_dir=./src", "--dataset_dir=./dataset"]

@@ -24,20 +24,21 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module='bs4')
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
 warnings.filterwarnings("ignore", module='bs4')
 
-hf_token = os.environ.get("HF_TOKEN")
+hf_token = os.environ.get("HF_TOKEN", "")
 
 parser = argparse.ArgumentParser(description='Process WARC files.')
 parser.add_argument('--working_dir', type=str, help='Path to the working_dir.')
+parser.add_argument('--dataset_dir', type=str, help='Path to the load and save dataset (not common crawl warc.')
+parser.add_argument('--num_proc', type=int, default=8, help='Path to the load and save dataset (not common crawl warc.')
 args = parser.parse_args()
 working_dir = args.working_dir
 
-warc_file = 'data/202404/CC-MAIN-20240412101354-20240412131354-00012.warc'
-output_file = os.path.join(working_dir, "dataset")
+dataset_dir = args.dataset_dir
 
 # データの格納リスト
 
 try:
-    ja_soup_list = load_from_disk(output_file).to_list()
+    ja_soup_list = load_from_disk(dataset_dir).to_list()
 except Exception:
     ja_soup_list = []
 
@@ -150,7 +151,7 @@ def signal_handler(sig, frame):
                 last_itr_counts[result[1]] = result[2]
 
         dataset = Dataset.from_list(ja_soup_list)
-        dataset.save_to_disk(output_file)
+        dataset.save_to_disk(dataset_dir)
 
         progression = {"last_itr_counts": last_itr_counts, "processed_file_names": processed_file_names}
         with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
@@ -167,7 +168,7 @@ try:
         warc_with_info.append((warc_path, last_itr_count))
 
     with tqdm(total=total_iterations, unit='file', unit_scale=True) as pbar:
-        with ProcessPoolExecutor(max_workers=8) as executor:
+        with ProcessPoolExecutor(max_workers=args.num_proc) as executor:
             signal.signal(signal.SIGINT, signal_handler)
             signal.signal(signal.SIGTERM, signal_handler)
             try:
@@ -197,7 +198,7 @@ finally:
 
     dataset = Dataset.from_list(ja_soup_list)
     print("Saving...")
-    dataset.save_to_disk(output_file)
+    dataset.save_to_disk(dataset_dir)
 
     progression = {"last_itr_counts": last_itr_counts, "processed_file_names": processed_file_names}
     with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
