@@ -1,0 +1,13 @@
+version: '3'
+services:
+  python3:
+    restart: always
+    build: .
+    container_name: 'python3'
+    working_dir: '/root/'
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    tty: true
+    volumes:
+      - .:/root/src
+      - /mnt/nvme2n1/dataset/commoncrawl_parallel:/root/dataset
