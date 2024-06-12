@@ -110,7 +110,6 @@ def process_warc(warc_path, last_itr_count):
                             if len(result["text"]) < 400:
                                 rejected = True
                                 rejected_reason = "Too_Short"
-                                continue
 
                             result["rejected"] = rejected
                             result["rejected_reason"] = rejected_reason
