@@ -10,8 +10,6 @@ from warcio.archiveiterator import ArchiveIterator
 from trafilatura import fetch_url, extract, extract_metadata
 from tqdm import tqdm
 
-# TBD
-warc_file = 'data/202404/CC-MAIN-20240412101354-20240412131354-00012.warc'
 # データセットを格納する場所
 output_file = "/mnt/nvme2n1/dataset/commoncrawl"
 
@@ -22,13 +20,13 @@ output_file = "/mnt/nvme2n1/dataset/commoncrawl"
 
 # データセットのロード
 try:
-    ja_soup_list = load_from_disk(output_file).to_list()
+    refined_common_crawl = load_from_disk(output_file).to_list()
 except Exception:
-    ja_soup_list = []
+    refined_common_crawl = []
 
 # 途中から再開する用の位置情報の取得
-if len(ja_soup_list) > 0:
-    final_id = ja_soup_list[-1]["commoncrawl_id"]
+if len(refined_common_crawl) > 0:
+    final_id = refined_common_crawl[-1]["commoncrawl_id"]
 else:
     final_id = 0
 
@@ -141,7 +139,7 @@ try:
                             result["language"] = "ja"
                             result["commoncrawl_id"] = final_id
                             result["url"] = record.rec_headers.get_header('WARC-Target-URI')
-                            ja_soup_list.append(result)
+                            refined_common_crawl.append(result)
                             print(f"Found Japanese: \n\tURL: {result['url']}\n\tTitle: {result['title']}")
 
         # 処理したデータを格納する配列に追加
@@ -154,7 +152,7 @@ except Exception as e:
     traceback.print_exc()
 finally:
     # 処理結果を保存
-    dataset = Dataset.from_list(ja_soup_list)
+    dataset = Dataset.from_list(refined_common_crawl)
     dataset.save_to_disk(output_file)
 
     # 進捗データの保存
