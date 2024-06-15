@@ -1,7 +1,12 @@
 import gzip
 import io
 import json
+import os
+import re
+import sys
+import tempfile
 import traceback
+import zlib
 
 import requests
 from bs4 import BeautifulSoup
@@ -58,6 +63,37 @@ for warc_path in warc_paths:
     if warc_path not in processed_file_names:
         cleaned_warcs.append(warc_path)
 
+def parse_metadata(byte_array):
+    """
+    warcのmetadataをdictにパースする
+    :param byte_array: record.content_stream().read()
+    :return:
+    """
+    # バイト列を文字列にデコード
+    data_str = byte_array.decode('utf-8')
+
+    # 文字列を行ごとに分割
+    lines = data_str.split('\r\n')
+
+    # メタデータを格納する辞書
+    metadata = {}
+
+    for line in lines:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip()
+            value = value.strip()
+
+            # valueがJSON形式のテキストならdictionaryに変換
+            try:
+                json_data = json.loads(value)
+                metadata[key] = json_data
+            except json.JSONDecodeError:
+                metadata[key] = value
+
+    return metadata
+
+
 # メインの処理開始
 # warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
 #     処理手順:
@@ -67,86 +103,67 @@ for warc_path in warc_paths:
 #     4. 日本語を対象として配列に追加
 try:
     iteration = 0
-    for warc_path in cleaned_warcs:
-        print(f"Progress... {iteration + 1} / {len(warc_path)}")
-
-        if warc_path in processed_file_names:
-            print("Skipping.")
-            continue
-
-        # WARCファイルのURLを構築
-        warc_url = f"https://data.commoncrawl.org/{warc_path}"
-
-        # WARCファイルをダウンロード
-        response = requests.get(warc_url, stream=True)
-        total_size = int(response.headers.get("Content-Length", 0))
-        block_size = 1024  # 1 KB
-
-        with tqdm(total=total_size, unit="B", unit_scale=True, desc=f"Downloading {warc_path}") as pbar:
-            content = bytearray()
-            for data in response.iter_content(block_size):
-                content.extend(data)
-                pbar.update(len(data))
-
-        # ダウンロードしたWARCファイルを解凍
-        with tqdm(total=len(content), unit="B", unit_scale=True, desc=f"Decompressing {warc_path}") as pbar:
-            decompressed_data = bytearray()
-            with gzip.GzipFile(fileobj=io.BytesIO(content)) as gz_file:
-                warc_data = gz_file.read()
-                pbar.update(len(content))
-
-        # ArchiveIteratorでイテレートする
-        iteration = 0
-        for record in tqdm(ArchiveIterator(io.BytesIO(warc_data))):
-            final_id += 1
-            iteration += 1
-            # 前回処理が終了した時点までスキップ
-            if iteration <= last_itr_count:
-                last_itr_count = 0
+    lang_pattern = re.compile(r'<html.*lang="(.*?)"')
+    with tqdm(total=len(cleaned_warcs), unit='file', unit_scale=True, position=0) as pbar:
+        for warc_path in cleaned_warcs:
+            if warc_path in processed_file_names:
+                pbar.update()
                 continue
 
-            # 正常に取得できていて、Content-Typeが"text/html"のものを対象とする
-            if record.rec_type == 'response':
-                if record.http_headers.get_header('Content-Type') == 'text/html':
+            # WARCファイルのURLを構築
+            warc_url = f"https://data.commoncrawl.org/{warc_path}"
+
+            # WARCファイルをダウンロード
+            response = requests.get(warc_url, stream=True)
+            total_size = int(response.headers.get("Content-Length", 0))
+            block_size = 1024 * 1024  # 1 KB
+            decompressobj = zlib.decompressobj(zlib.MAX_WBITS|32)
+
+            content = bytearray()
+            is_response_accepted = False
+            tmp_result = None
+            for record in tqdm(ArchiveIterator(response.raw), position=1):
+                if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
                     content = record.content_stream().read()
-                    try:
-                        # HTMLタグのlang属性の値を取得するためにBeautifulSoupを使用
-                        # lang="ja"なら日本語ページとみなす (Swallowにならって）
-                        soup = BeautifulSoup(content, 'html.parser')
-                    except Exception as e:
-                        continue
+                    lang = lang_pattern.search(str(content))
 
-                    html_tag = soup.find('html')
-                    if html_tag and html_tag.has_attr('lang'):
-                        lang = html_tag['lang']
-                        if lang == "ja":
-                            # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
-                            # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
-                            # deduplicateの効果は不明
-                            json_data = extract(content, output_format='json', target_language="ja",
-                                                deduplicate=True,
-                                                include_formatting=True, include_tables=True)
-                            # パースに失敗するとNoneが返ってくるので除外
-                            if json_data == None:
-                                continue
-                            result = json.loads(json_data)
+                    if lang and lang.group(1) == "ja":
+                        # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
+                        # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
+                        # deduplicateの効果は不明
+                        json_data = extract(content, output_format='json', target_language="ja",
+                                            deduplicate=True,
+                                            include_formatting=True, include_tables=True)
+                        # パースに失敗するとNoneが返ってくるので除外
+                        if json_data == None:
+                            continue
+                        result = json.loads(json_data)
 
-                            # （Swallowより）本文の文字数が400以下の場合は低品質とみなしてスキップ
-                            if len(result["text"]) < 400:
-                                continue
+                        # （Swallowより）本文の文字数が400以下の場合は低品質とみなしてスキップ
+                        if len(result["text"]) < 400:
+                            result["rejected"] = True
+                            result["rejected_reason"] = "Too_Short"
+                        else:
+                            result["rejected"] = False
+                            result["rejected_reason"] = ""
 
-                            # 辞書に情報を追加
-                            result["language"] = "ja"
-                            result["commoncrawl_id"] = final_id
-                            result["url"] = record.rec_headers.get_header('WARC-Target-URI')
-                            refined_common_crawl.append(result)
-                            print(f"Found Japanese: \n\tURL: {result['url']}\n\tTitle: {result['title']}")
+                        # 辞書に情報を追加
+                        result["commoncrawl_id"] = final_id
+                        tmp_result = result
+                        is_response_accepted = True
 
-        # 処理したデータを格納する配列に追加
-        processed_file_names.add(warc_path)
-        # リソースの解放（念のため）
-        del response
-        del warc_data
+                elif is_response_accepted and record.rec_type == 'metadata':
+                    metadata = parse_metadata(record.content_stream().read())
+                    if any([item["code"] == "ja" for item in metadata["languages-cld2"]["languages"]]):
+                        tmp_result["metadata"] = metadata
+                        refined_common_crawl.append(tmp_result)
+                    is_response_accepted = False
+
+            # 処理したデータを格納する配列に追加
+            processed_file_names.add(warc_path)
+            # リソースの解放（念のため）
+            del response
+            pbar.update()
 
 except Exception as e:
     traceback.print_exc()
