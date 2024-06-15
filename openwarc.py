@@ -142,10 +142,11 @@ try:
                         json_data = extract(content, output_format='json', target_language="ja",
                                             deduplicate=True,
                                             include_formatting=True, include_tables=True)
-                        # パースに失敗するとNoneが返ってくるので除外
-                        if json_data == None:
+                        # パースに失敗することがある
+                        try:
+                            result = json.loads(json_data)
+                        except:
                             continue
-                        result = json.loads(json_data)
 
                         # （Swallowより）本文の文字数が400以下の場合は低品質とみなしてスキップ
                         if len(result["text"]) < 400:
