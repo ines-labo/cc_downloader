@@ -154,10 +154,13 @@ try:
 
                 elif is_response_accepted and record.rec_type == 'metadata':
                     metadata = parse_metadata(record.content_stream().read())
+                    if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
+                        is_response_accepted = False
+                        continue
                     if any([item["code"] == "ja" for item in metadata["languages-cld2"]["languages"]]):
                         tmp_result["metadata"] = metadata
                         refined_common_crawl.append(tmp_result)
-                    is_response_accepted = False
+                        is_response_accepted = False
 
             # 処理したデータを格納する配列に追加
             processed_file_names.add(warc_path)
