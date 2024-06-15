@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import tempfile
+import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -125,6 +126,14 @@ def process_warc(warc_path):
 
         # WARCファイルをダウンロード
         response = requests.get(warc_url, stream=True)
+        # 403 (Rate limit)と404 (not found)を想定
+        # 404の場合は例外を出す
+        while response.status_code != 200:
+            if response.status_code == 404:
+                raise Exception(f"invalid warc url: {warc_url}")
+            print("retrying...")
+            time.sleep(5)
+            response = requests.get(warc_url, stream=True)
 
         is_response_accepted = False
         tmp_result = None

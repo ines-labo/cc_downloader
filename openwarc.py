@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import traceback
 import zlib
 
@@ -63,6 +64,7 @@ for warc_path in warc_paths:
     if warc_path not in processed_file_names:
         cleaned_warcs.append(warc_path)
 
+
 def parse_metadata(byte_array):
     """
     warcのmetadataをdictにパースする
@@ -115,9 +117,15 @@ try:
 
             # WARCファイルをダウンロード
             response = requests.get(warc_url, stream=True)
+            # 403 (Rate limit)と404 (not found)を想定
+            while response.status_code != 200:
+                if response.status_code == 404:
+                    raise Exception("invalid warc url")
+                time.sleep(5)
+                response = requests.get(warc_url, stream=True)
             total_size = int(response.headers.get("Content-Length", 0))
             block_size = 1024 * 1024  # 1 KB
-            decompressobj = zlib.decompressobj(zlib.MAX_WBITS|32)
+            decompressobj = zlib.decompressobj(zlib.MAX_WBITS | 32)
 
             content = bytearray()
             is_response_accepted = False
