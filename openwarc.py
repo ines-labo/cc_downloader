@@ -103,11 +103,12 @@ def save_refined(refined_data, path):
 
 def clear_tmp_file(path, create_empty=True):
     try:
-        os.remove(path)
+        if os.path.exists(path):
+            os.remove(path)
         if create_empty:
             open(path, "w", encoding="utf-8").close()
-    except FileNotFoundError as e:
-        pass
+    except Exception:
+        traceback.print_exc()
 
 
 def compress(src_path, output_folder_path):
