@@ -111,8 +111,7 @@ def clear_tmp_file(path, create_empty=True):
 
 
 def compress(src_path, output_folder_path):
-    if not os.path.exists(output_folder_path):
-        os.mkdir(output_folder_path)
+    os.makedirs(output_folder_path, exist_ok=True)
     output_file_name = os.path.join(output_folder_path, str(ULID()) + ".zst")
     with open(src_path, "r", encoding="utf-8") as src_f, open(output_file_name, "wb") as out_f:
         cctx = zstandard.ZstdCompressor()
@@ -188,7 +187,7 @@ try:
                     if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
                         is_response_accepted = False
                         continue
-                    if any([item["code"] == "ja" for item in metadata["languages-cld2"]["languages"]]):
+                    if any([item["code"] == "ja" and item["text-covered"] > 0.3 for item in metadata["languages-cld2"]["languages"]]):
                         tmp_result["metadata"] = metadata
                         refined_warc.append(tmp_result)
                         is_response_accepted = False
@@ -210,7 +209,8 @@ except Exception as e:
 finally:
     if get_file_size(temp_file_path) > 0:
         compress(temp_file_path, output_folder_name)
-        clear_tmp_file(temp_file_path, create_empty=False)
+
+    clear_tmp_file(temp_file_path, create_empty=False)
 
     # 進捗データの保存
     progression = {"last_itr_count": max(iteration, last_itr_count), "processed_file_names": list(processed_file_names)}

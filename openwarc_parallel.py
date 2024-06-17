@@ -1,53 +1,44 @@
 import argparse
 import concurrent
-import gzip
-import io
 import json
-import logging
-import math
 import os
 import re
 import signal
-import tempfile
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup, ParserRejectedMarkup, MarkupResemblesLocatorWarning, XMLParsedAsHTMLWarning, MarkupResemblesLocatorWarning
-from datasets import Dataset, load_from_disk
-from warcio.archiveiterator import ArchiveIterator
-from trafilatura import fetch_url, extract, extract_metadata
+import zstandard
 from tqdm import tqdm
-
-# BeautifulSoupのWaningが非常にうるさいので抑制
-# ただし"Some characters could not be decoded, and were replaced with REPLACEMENT CHARACTER."の1文はハードコードされており消すことができない
-import warnings
-warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning, module='bs4')
-warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning, module='bs4')
+from trafilatura import extract
+from ulid import ULID
+from warcio.archiveiterator import ArchiveIterator
 
 # 実行時引数の設定
 parser = argparse.ArgumentParser(description='Process WARC files.')
 parser.add_argument('--working_dir', type=str, help='Path to the working_dir.')
 parser.add_argument('--dataset_dir', type=str, help='Path to the load and save dataset (not common crawl warc.')
-parser.add_argument('--num_proc', type=int, default=8, help='Path to the load and save dataset (not common crawl warc.')
+parser.add_argument('--num_proc', type=int, default=8, help='並列実行の数')
+parser.add_argument('--num_zstd_chunk_size', type=int, default=1000, help='1つのzstdファイルに何件含めるか')
 args = parser.parse_args()
 
 working_dir = args.working_dir
-dataset_dir = args.dataset_dir
+output_folder_path = args.dataset_dir
+temp_file_path = "./temp_refined_warc_samples.jsonl"
+
+# 実行時引数の値をprintで出力
+print(f"Working directory: {args.working_dir}")
+print(f"Dataset directory: {args.dataset_dir}")
+print(f"Number of processes: {args.num_proc}")
+print(f"Number of ZSTD chunk size: {args.num_zstd_chunk_size}")
+
+# 1つのzstdに含めたい最大のwarcファイル件数
+zstd_chunk_size = args.num_zstd_chunk_size
 
 # 前回実行時、処理が途中で中断された場合にデータセットと進捗を復元する
-# 1. データセットのロード
-# 2. warc.pathsファイルの読み込み
-# 3. 進捗の読み込み
-
-# データセットのロード
-try:
-    refined_common_crawl = load_from_disk(dataset_dir).to_list()
-except Exception:
-    refined_common_crawl = []
+# 1. warc.pathsファイルの読み込み
+# 2. 進捗の読み込み
 
 # warc.pathsファイルの読み込み
 # これによって全てのwarcファイルの名前が分かる
@@ -55,7 +46,7 @@ with open(os.path.join(working_dir, "data/202404/warc.paths"), "r", encoding="ut
     warc_paths = f.read().splitlines()
 
 # 進捗の読み込み
-# 進捗データは処理済みセグメントファイル名と、`dict[セグメントファイル名]=イテレーション回数`の辞書の２つ
+# 進捗データは処理済みセグメントファイル名の配列
 # もし進捗ファイルが読み込めない場合は新しく作成する
 try:
     with open(os.path.join(working_dir, "progress_parallel.txt"), "r", encoding="utf-8") as f:
@@ -172,26 +163,15 @@ def process_warc(warc_path):
                 if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
                     is_response_accepted = False
                     continue
-                if any([item["code"] == "ja" for item in metadata["languages-cld2"]["languages"]]):
+                if any([item["code"] == "ja" and item["text-covered"] > 0.3 for item in metadata["languages-cld2"]["languages"]]):
                     tmp_result["metadata"] = metadata
                     result_list.append(tmp_result)
                     is_response_accepted = False
 
         return True, warc_path, result_list
-    except ParserRejectedMarkup as e:
-        return False, warc_path, result_list
     except Exception as e:
         traceback.print_exc()
         return False, warc_path, result_list
-
-
-# 非同期処理によって今回新しく得たデータはresultsに格納される
-# resultsはList[Dict]
-# dictのカラム、データ形式はREADMEを参照
-results = None
-
-# 進捗バー表示のための全体のデータ数
-total_iterations = len(cleaned_warcs)
 
 def signal_handler(sig, frame):
     """
@@ -204,31 +184,61 @@ def signal_handler(sig, frame):
     """
     print('Ctrl+C pressed. Shutting down gracefully...')
 
-    if results != None and len(results) > 0:
-        print("Saving...")
+    if get_file_size(temp_file_path) > 0:
+        compress(temp_file_path, output_folder_path)
 
-        # 結果を結合
-        for result in results:
-            if result[0]:
-                # もし処理が成功していたら処理済みファイル名に追加し、結果を格納する配列に保存
-                refined_common_crawl.extend(result[2])
-                processed_file_names.append(result[1])
+    clear_tmp_file(temp_file_path, create_empty=False)
 
-        # データセットに保存
-        if len(refined_common_crawl) > 0:
-            dataset = Dataset.from_list(refined_common_crawl)
-            dataset.save_to_disk(dataset_dir)
-
-        # 進捗データの保存
-        progression = {"processed_file_names": processed_file_names}
-        with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
-            json.dump(progression, f, ensure_ascii=False)
+    # 進捗データの保存
+    progression = {"processed_file_names": processed_file_names}
+    with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
+        json.dump(progression, f, ensure_ascii=False)
 
     # ProcessPoolExecutorによる処理を中断
     executor.shutdown(wait=True)
 
 
+def get_file_size(path):
+    return os.path.getsize(path)
+
+
+def save_refined(refined_data, path):
+    mode = "a"
+    if not os.path.exists(path):
+        mode = "w"
+    # 一時ファイルにJSONLとして書き込む
+    with open(path, mode, encoding="utf-8") as f:
+        for item in refined_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def clear_tmp_file(path, create_empty=True):
+    try:
+        os.remove(path)
+        if create_empty:
+            open(path, "w", encoding="utf-8").close()
+    except FileNotFoundError as e:
+        pass
+
+
+def compress(src_path, output_folder_path):
+    print("compressing and writing shards.")
+    os.makedirs(output_folder_path, exist_ok=True)
+    output_file_name = os.path.join(output_folder_path, str(ULID()) + ".zst")
+    with open(src_path, "r", encoding="utf-8") as src_f, open(output_file_name, "wb") as out_f:
+        cctx = zstandard.ZstdCompressor()
+        with cctx.stream_writer(out_f) as compressor:
+            for line in src_f:
+                compressor.write(line.encode("utf-8"))
+            compressor.flush()
+    print("Compressed and saved to", output_file_name)
+
+
 try:
+    # 進捗バー表示のための全体のデータ数
+    total_iterations = len(cleaned_warcs)
+    # 一時ファイルの初期化
+    clear_tmp_file(temp_file_path)
     # 並列処理の実行
     with tqdm(total=total_iterations, unit='file', unit_scale=True) as pbar:
         with ProcessPoolExecutor(max_workers=args.num_proc) as executor:
@@ -237,11 +247,18 @@ try:
             signal.signal(signal.SIGTERM, signal_handler)
             try:
                 futures = {executor.submit(process_warc, warc_path): warc_path for warc_path in cleaned_warcs}
-                results = []
                 # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
-                for future in concurrent.futures.as_completed(futures):
+                for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                     result = future.result()  # ここでのresultは(bool, str, list[dict])
-                    results.append(result)
+                    if result[0]:
+                        # 一時ファイルに保存
+                        save_refined(result[2], temp_file_path)
+                        # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
+                        if i % zstd_chunk_size == 0:
+                            compress(temp_file_path, output_folder_path)
+                            clear_tmp_file(temp_file_path)
+                        # 処理済みファイル名を追加
+                        processed_file_names.append(result[1])
                     pbar.update(1)
             except:
                 traceback.print_exc()
@@ -249,17 +266,11 @@ try:
 except Exception as e:
     traceback.print_exc()
 finally:
-    # 結果を結合
-    for result in results:
-        if result[0]:
-            # もし処理が成功していたら処理済みファイル名に追加し、結果を格納する配列に保存
-            refined_common_crawl.extend(result[2])
-            processed_file_names.append(result[1])
+    print("finishing main roop...")
+    if get_file_size(temp_file_path) > 0:
+        compress(temp_file_path, output_folder_path)
 
-    # データセットに保存
-    dataset = Dataset.from_list(refined_common_crawl)
-    print("Saving...")
-    dataset.save_to_disk(dataset_dir)
+    clear_tmp_file(temp_file_path, create_empty=False)
 
     # 進捗データの保存
     progression = {"processed_file_names": processed_file_names}
