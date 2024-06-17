@@ -1,40 +1,25 @@
-import gzip
-import io
+import json
 import json
 import os
 import re
-import sys
-import tempfile
 import time
 import traceback
 import zlib
 
 import requests
-from bs4 import BeautifulSoup
-from datasets import Dataset, load_from_disk
-from warcio.archiveiterator import ArchiveIterator
-from trafilatura import fetch_url, extract, extract_metadata
+import zstandard
+from datasets import Dataset
 from tqdm import tqdm
+from trafilatura import extract
+from ulid import ULID
+from warcio.archiveiterator import ArchiveIterator
 
 # データセットを格納する場所
-output_file = "/mnt/nvme2n1/dataset/commoncrawl"
+output_folder_name = "/mnt/nvme2n1/dataset/commoncrawl/shards"
 
 # 前回実行時、処理が途中で中断された場合にデータセットと進捗を復元する
-# 1. データセットのロード
-# 2. warc.pathsファイルの読み込み
-# 3. 進捗の読み込み
-
-# データセットのロード
-try:
-    refined_common_crawl = load_from_disk(output_file).to_list()
-except Exception:
-    refined_common_crawl = []
-
-# 途中から再開する用の位置情報の取得
-if len(refined_common_crawl) > 0:
-    final_id = refined_common_crawl[-1]["commoncrawl_id"]
-else:
-    final_id = 0
+# 1. warc.pathsファイルの読み込み
+# 2. 進捗の読み込み
 
 # warc.pathsファイルの読み込み
 # これによって全てのwarcファイルの名前が分かる
@@ -46,6 +31,12 @@ with open(warc_path_file_location, "r", encoding="utf-8") as f:
 # 進捗データは処理済みセグメントファイル名と最後に読み込んでいたwarcファイルの処理済みイテレーション回数の２つ
 # もし進捗ファイルが読み込めない場合は新しく作成する
 processed_file_names = set()
+
+# 一時ファイルのパス
+temp_file_path = "./temp_refined_warc_samples.jsonl"
+
+# 1つのzstdに含めたい最大のwarcファイル件数
+zstd_chunk_size = 1000
 
 try:
     with open("progress.txt", "r", encoding="utf-8") as f:
@@ -96,6 +87,41 @@ def parse_metadata(byte_array):
     return metadata
 
 
+def get_file_size(path):
+    return os.path.getsize(path)
+
+
+def save_refined(refined_data, path):
+    mode = "a"
+    if not os.path.exists(path):
+        mode = "w"
+    # 一時ファイルにJSONLとして書き込む
+    with open(path, mode, encoding="utf-8") as f:
+        for item in refined_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def clear_tmp_file(path, create_empty=True):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+        if create_empty:
+            open(path, "w", encoding="utf-8").close()
+    except Exception:
+        traceback.print_exc()
+
+
+def compress(src_path, output_folder_path):
+    os.makedirs(output_folder_path, exist_ok=True)
+    output_file_name = os.path.join(output_folder_path, str(ULID()) + ".zst")
+    with open(src_path, "r", encoding="utf-8") as src_f, open(output_file_name, "wb") as out_f:
+        cctx = zstandard.ZstdCompressor()
+        with cctx.stream_writer(out_f) as compressor:
+            for line in src_f:
+                compressor.write(line.encode("utf-8"))
+            compressor.flush()
+
+
 # メインの処理開始
 # warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
 #     処理手順:
@@ -106,26 +132,44 @@ def parse_metadata(byte_array):
 try:
     iteration = 0
     lang_pattern = re.compile(r'<html.*lang="(.*?)"')
+    refined_warc = []
+    clear_tmp_file(temp_file_path)
     with tqdm(total=len(cleaned_warcs), unit='file', unit_scale=True, position=0) as pbar:
-        for warc_path in cleaned_warcs:
-            if warc_path in processed_file_names:
-                pbar.update()
-                continue
+        for i, warc_path in enumerate(cleaned_warcs, 1):
+            refined_warc = []
 
             # WARCファイルのURLを構築
             warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
             # WARCファイルをダウンロード
-            response = requests.get(warc_url, stream=True)
+            # requests.getで接続できなかった場合に備えて、最大5回のリトライを行う
+            max_retry = 5
+            current_trial = 0
+            connection_succeed = True
+            while True:
+                try:
+                    current_trial += 1
+                    if current_trial > max_retry:
+                        print("The connection cannot be created for some reason. Aborting this warc file.")
+                        processed_file_names.add(warc_path)
+                        connection_succeed = False
+                        break
+                    response = requests.get(warc_url, stream=True)
+                    break
+                except ConnectionError as e:
+                    print(e)
+                    print("retrying...")
+                    time.sleep(5)
+            if connection_succeed == False:
+                break
+
             # 403 (Rate limit)と404 (not found)を想定
             while response.status_code != 200:
                 if response.status_code == 404:
                     raise Exception("invalid warc url")
+                print(f"{warc_path}: Got response.status_code == {response.status_code}. Retrying...")
                 time.sleep(5)
                 response = requests.get(warc_url, stream=True)
-            total_size = int(response.headers.get("Content-Length", 0))
-            block_size = 1024 * 1024  # 1 KB
-            decompressobj = zlib.decompressobj(zlib.MAX_WBITS | 32)
 
             content = bytearray()
             is_response_accepted = False
@@ -157,7 +201,6 @@ try:
                             result["rejected_reason"] = ""
 
                         # 辞書に情報を追加
-                        result["commoncrawl_id"] = final_id
                         tmp_result = result
                         is_response_accepted = True
 
@@ -166,13 +209,19 @@ try:
                     if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
                         is_response_accepted = False
                         continue
-                    if any([item["code"] == "ja" for item in metadata["languages-cld2"]["languages"]]):
+                    if any([item["code"] == "ja" and item["text-covered"] > 0.3 for item in metadata["languages-cld2"]["languages"]]):
                         tmp_result["metadata"] = metadata
-                        refined_common_crawl.append(tmp_result)
+                        refined_warc.append(tmp_result)
                         is_response_accepted = False
 
             # 処理したデータを格納する配列に追加
             processed_file_names.add(warc_path)
+            save_refined(refined_warc, temp_file_path)
+
+            if i % zstd_chunk_size == 0:
+                compress(temp_file_path, output_folder_name)
+                clear_tmp_file(temp_file_path)
+
             # リソースの解放（念のため）
             del response
             pbar.update()
@@ -180,9 +229,10 @@ try:
 except Exception as e:
     traceback.print_exc()
 finally:
-    # 処理結果を保存
-    dataset = Dataset.from_list(refined_common_crawl)
-    dataset.save_to_disk(output_file)
+    if get_file_size(temp_file_path) > 0:
+        compress(temp_file_path, output_folder_name)
+
+    clear_tmp_file(temp_file_path, create_empty=False)
 
     # 進捗データの保存
     progression = {"last_itr_count": max(iteration, last_itr_count), "processed_file_names": list(processed_file_names)}
