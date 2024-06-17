@@ -142,11 +142,32 @@ try:
             warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
             # WARCファイルをダウンロード
-            response = requests.get(warc_url, stream=True)
+            # requests.getで接続できなかった場合に備えて、最大5回のリトライを行う
+            max_retry = 5
+            current_trial = 0
+            connection_succeed = True
+            while True:
+                try:
+                    current_trial += 1
+                    if current_trial > max_retry:
+                        print("The connection cannot be created for some reason. Aborting this warc file.")
+                        processed_file_names.add(warc_path)
+                        connection_succeed = False
+                        break
+                    response = requests.get(warc_url, stream=True)
+                    break
+                except ConnectionError as e:
+                    print(e)
+                    print("retrying...")
+                    time.sleep(5)
+            if connection_succeed == False:
+                break
+
             # 403 (Rate limit)と404 (not found)を想定
             while response.status_code != 200:
                 if response.status_code == 404:
                     raise Exception("invalid warc url")
+                print(f"{warc_path}: Got response.status_code == {response.status_code}. Retrying...")
                 time.sleep(5)
                 response = requests.get(warc_url, stream=True)
 
