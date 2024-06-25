@@ -5,14 +5,19 @@ import re
 import time
 import traceback
 import zlib
+from typing import Optional
 
 import requests
 import zstandard
 from datasets import Dataset
+from fasttext import load_model
 from tqdm import tqdm
 from trafilatura import extract
 from ulid import ULID
 from warcio.archiveiterator import ArchiveIterator
+
+from lang_predictor import FastTextLangPredictor
+from xml_parser import XMLMetadataParser
 
 # データセットを格納する場所
 output_folder_name = "/mnt/nvme2n1/dataset/commoncrawl/shards"
@@ -122,6 +127,19 @@ def compress(src_path, output_folder_path):
             compressor.flush()
 
 
+def lang_detect(xml_data, metadata_parser: XMLMetadataParser, lang_detector: FastTextLangPredictor):
+    meta_description = metadata_parser.parse_description(xml_data)
+    if meta_description and len(meta_description) > 10:
+        return lang_detector.predict(meta_description.replace("\n", " "))
+    meta_title = metadata_parser.parse_title(xml_data)
+    if meta_title and len(meta_title) > 5:
+        return lang_detector.predict(meta_title.replace("\n", " "))
+    meta_heading = metadata_parser.parse_heading(xml_data)
+    if meta_heading and len(meta_heading) > 10:
+        return lang_detector.predict(meta_heading.replace("\n", " "))
+    return None
+
+
 # メインの処理開始
 # warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
 #     処理手順:
@@ -131,7 +149,8 @@ def compress(src_path, output_folder_path):
 #     4. 日本語を対象として配列に追加
 try:
     iteration = 0
-    lang_pattern = re.compile(r'<html.*lang="(.*?)"')
+    metadata_parser = XMLMetadataParser()
+    lang_predictor = FastTextLangPredictor()
     refined_warc = []
     clear_tmp_file(temp_file_path)
     with tqdm(total=len(cleaned_warcs), unit='file', unit_scale=True, position=0) as pbar:
@@ -177,9 +196,10 @@ try:
             for record in tqdm(ArchiveIterator(response.raw), position=1):
                 if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
                     content = record.content_stream().read()
-                    lang = lang_pattern.search(str(content))
 
-                    if lang and lang.group(1) == "ja":
+                    lang = lang_detect(content, metadata_parser, lang_predictor)
+
+                    if lang and lang[0][0] == "ja":
                         # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
                         # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
                         # deduplicateの効果は不明
@@ -200,6 +220,8 @@ try:
                             result["rejected"] = False
                             result["rejected_reason"] = ""
 
+                        result["languages-fasttext"] = lang[0]
+
                         # 辞書に情報を追加
                         tmp_result = result
                         is_response_accepted = True
@@ -209,7 +231,10 @@ try:
                     if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
                         is_response_accepted = False
                         continue
-                    if any([item["code"] == "ja" and item["text-covered"] > 0.3 for item in metadata["languages-cld2"]["languages"]]):
+
+                    languages = metadata["languages-cld2"]["languages"]
+                    max_lang_code = max(languages, key=lambda x: x['text-covered'])['code']
+                    if max_lang_code == "ja":
                         tmp_result["metadata"] = metadata
                         refined_warc.append(tmp_result)
                         is_response_accepted = False

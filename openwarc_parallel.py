@@ -15,6 +15,9 @@ from trafilatura import extract
 from ulid import ULID
 from warcio.archiveiterator import ArchiveIterator
 
+from lang_predictor import FastTextLangPredictor
+from xml_parser import XMLMetadataParser
+
 # 実行時引数の設定
 parser = argparse.ArgumentParser(description='Process WARC files.')
 parser.add_argument('--working_dir', type=str, help='Path to the working_dir.')
@@ -108,10 +111,27 @@ def process_warc(warc_path):
     warc_path: str - 処理対象のwarcファイル名。入力のwarc_pathと同じ
     ja_soup_list: list[dict] - 処理済みのデータ
     """
+    def lang_detect(xml_data, metadata_parser: XMLMetadataParser, lang_detector: FastTextLangPredictor):
+        meta_description = metadata_parser.parse_description(xml_data)
+        if meta_description and len(meta_description) > 10:
+            return lang_detector.predict(meta_description.replace("\n", " "))
+        meta_title = metadata_parser.parse_title(xml_data)
+        if meta_title and len(meta_title) > 5:
+            return lang_detector.predict(meta_title.replace("\n", " "))
+        meta_heading = metadata_parser.parse_heading(xml_data)
+        if meta_heading and len(meta_heading) > 10:
+            return lang_detector.predict(meta_heading.replace("\n", " "))
+        return None
+
     print(f"Start: {warc_path}")
     result_list = []
 
     try:
+        # xmlからメタデータをパースするやつ
+        metadata_parser = XMLMetadataParser()
+        # fasttextを使用して言語判定するやつ
+        lang_predictor = FastTextLangPredictor()
+
         # WARCファイルのURLを構築
         warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
@@ -146,17 +166,18 @@ def process_warc(warc_path):
         for record in ArchiveIterator(response.raw):
             if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
                 content = record.content_stream().read()
-                lang = lang_pattern.search(str(content))
 
-                if lang and lang.group(1) == "ja":
-                    # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
-                    # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
-                    # deduplicateの効果は不明
-                    json_data = extract(content, output_format='json', target_language="ja",
-                                        deduplicate=True,
-                                        include_formatting=True, include_tables=True)
+                lang = lang_detect(content, metadata_parser, lang_predictor)
+
+                if lang and lang[0][0] == "ja":
                     # パースに失敗することがある
                     try:
+                        # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
+                        # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
+                        # deduplicateの効果は不明
+                        json_data = extract(content, output_format='json', target_language="ja",
+                                            deduplicate=True,
+                                            include_formatting=True, include_tables=True)
                         result = json.loads(json_data)
                     except:
                         continue
@@ -169,6 +190,8 @@ def process_warc(warc_path):
                         result["rejected"] = False
                         result["rejected_reason"] = ""
 
+                    result["languages-fasttext"] = lang[0]
+
                     tmp_result = result
                     is_response_accepted = True
 
@@ -177,7 +200,10 @@ def process_warc(warc_path):
                 if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
                     is_response_accepted = False
                     continue
-                if any([item["code"] == "ja" and item["text-covered"] > 0.3 for item in metadata["languages-cld2"]["languages"]]):
+
+                languages = metadata["languages-cld2"]["languages"]
+                max_lang_code = max(languages, key=lambda x: x['text-covered'])['code']
+                if max_lang_code == "ja":
                     tmp_result["metadata"] = metadata
                     result_list.append(tmp_result)
                     is_response_accepted = False

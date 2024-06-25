@@ -19,4 +19,6 @@ RUN pip install --upgrade setuptools
 
 RUN pip install -r /root/requirements.txt
 
-ENTRYPOINT ["python3", "src/openwarc_parallel.py", "--working_dir=./src", "--dataset_dir=./dataset/commoncrawl_parallel/shards", "--num_proc=4"]
+COPY start.sh /root/
+RUN chmod +x /root/start.sh
+ENTRYPOINT ["/root/start.sh"]
