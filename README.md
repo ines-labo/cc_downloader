@@ -19,6 +19,7 @@ PCごと落ちないようにopenwarc_parallel.pyはDockerで動かす想定
 1. https://commoncrawl.org/get-started からCC-MAIN-2024-18を選択
 2. warc.paths.gzをダウンロード
 3. 解凍したものをdata/202404に配置
+4. `download_weights.py`を実行（fasttextのウェイトファイルをダウンロードする）（dockerを使用する場合は既にDockerfileに書いてあるので実行する必要は無い）
 
 ```
 repository_root/
