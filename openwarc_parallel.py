@@ -101,7 +101,36 @@ def parse_metadata(byte_array):
     return metadata
 
 
-def process_warc(warc_path):
+def download_warc_file(warc_url, max_retries=5, retry_delay=5):
+    """
+    WARCファイルをダウンロードする関数
+
+    :param warc_url: ダウンロードするWARCファイルのURL
+    :param max_retries: 最大リトライ回数（デフォルト: 5回）
+    :param retry_delay: リトライ間の待機時間（秒）（デフォルト: 5秒）
+    :return: 成功時はresponseオブジェクト、失敗時はNone
+    """
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(warc_url, stream=True)
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 404:
+                raise Exception(f"Invalid WARC URL: {warc_url}")
+            else:
+                print(f"{warc_url}: Got response.status_code == {response.status_code}. Retrying...")
+        except ConnectionError as e:
+            print(f"Connection error: {e}")
+
+        if attempt < max_retries - 1:
+            print(f"Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+
+    print(f"Failed to download WARC file after {max_retries} attempts. Aborting.")
+    return None
+
+
+def process_warc(warc_path, current_trial=0, max_trial=5):
     """
     warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     処理手順:
@@ -140,33 +169,10 @@ def process_warc(warc_path):
         warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
         # WARCファイルをダウンロード
-        # requests.getで接続できなかった場合に備えて、最大5回のリトライを行う
-        max_retry = 5
-        current_trial = 0
-        while True:
-            try:
-                current_trial += 1
-                if current_trial > max_retry:
-                    print("The connection cannot be created for some reason. Aborting this warc file.")
-                    return True, warc_path, result_list
-                response = requests.get(warc_url, stream=True)
-                break
-            except ConnectionError as e:
-                print(e)
-                print("retrying...")
-                time.sleep(5)
-        # 403 (Rate limit)と404 (not found)を想定
-        # 404の場合は例外を出す
-        while response.status_code != 200:
-            if response.status_code == 404:
-                raise Exception(f"invalid warc url: {warc_url}")
-            print(f"{warc_path}: Got response.status_code == {response.status_code}. Retrying...")
-            time.sleep(5)
-            response = requests.get(warc_url, stream=True)
+        response = download_warc_file(warc_url)
 
         is_response_accepted = False
         tmp_result = None
-        lang_pattern = re.compile(r'<html.*lang="(.*?)"')
         for record in ArchiveIterator(response.raw):
             if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
                 content = record.content_stream().read()
@@ -215,7 +221,10 @@ def process_warc(warc_path):
         return True, warc_path, result_list
     except Exception as e:
         traceback.print_exc()
-        return False, warc_path, result_list
+        if current_trial > max_trial:
+            return False, warc_path, result_list
+        del lang_predictor
+        return process_warc(warc_path, current_trial+1)
 
 def signal_handler(sig, frame):
     """
