@@ -1,6 +1,7 @@
 import argparse
 import concurrent
 import json
+import logging
 import os
 import re
 import signal
@@ -35,6 +36,9 @@ print(f"Working directory: {args.working_dir}")
 print(f"Dataset directory: {args.dataset_dir}")
 print(f"Number of processes: {args.num_proc}")
 print(f"Number of ZSTD chunk size: {args.num_zstd_chunk_size}")
+
+# trafilaturaによるwarningを抑制
+logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
 
 # 1つのzstdに含めたい最大のwarcファイル件数
 zstd_chunk_size = args.num_zstd_chunk_size
