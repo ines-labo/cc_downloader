@@ -228,6 +228,7 @@ try:
                             result["rejected_reason"] = ""
 
                         result["languages-fasttext"] = lang[0]
+                        result["rec_headers"] = dict(record.rec_headers.headers)
 
                         # 辞書に情報を追加
                         tmp_result = result
