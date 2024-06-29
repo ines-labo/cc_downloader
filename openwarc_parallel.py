@@ -201,6 +201,7 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
                         result["rejected_reason"] = ""
 
                     result["languages-fasttext"] = lang[0]
+                    result["rec_headers"] = dict(record.rec_headers.headers)
 
                     tmp_result = result
                     is_response_accepted = True
