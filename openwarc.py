@@ -23,6 +23,7 @@ from xml_parser import XMLMetadataParser
 
 # trafilaturaによるwarningを抑制
 logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
 
 # データセットを格納する場所
 output_folder_name = "/mnt/nvme2n1/dataset/commoncrawl/shards"
