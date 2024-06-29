@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
@@ -40,6 +41,7 @@ print(f"Number of ZSTD chunk size: {args.num_zstd_chunk_size}")
 
 # trafilaturaによるwarningを抑制
 logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
+logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
 
 # 1つのzstdに含めたい最大のwarcファイル件数
 zstd_chunk_size = args.num_zstd_chunk_size
@@ -252,8 +254,13 @@ def signal_handler(sig, frame):
     with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
         json.dump(progression, f, ensure_ascii=False)
 
+    print("Progression saved.")
+
     # ProcessPoolExecutorによる処理を中断
-    executor.shutdown(wait=True)
+    executor.shutdown(wait=False)
+
+    print("Executor shutdowned.")
+    sys.exit(0)
 
 
 def get_file_size(path):
