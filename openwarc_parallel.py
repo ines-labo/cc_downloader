@@ -264,7 +264,10 @@ def signal_handler(sig, frame):
 
 
 def get_file_size(path):
-    return os.path.getsize(path)
+    try:
+        return os.path.getsize(path)
+    except FileNotFoundError:
+        return 0
 
 
 def save_refined(refined_data, path):
@@ -338,9 +341,9 @@ finally:
     if get_file_size(temp_file_path) > 0:
         compress(temp_file_path, output_folder_path)
 
-    clear_tmp_file(temp_file_path, create_empty=False)
+        clear_tmp_file(temp_file_path, create_empty=False)
 
-    # 進捗データの保存
-    progression = {"processed_file_names": processed_file_names}
-    with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
-        json.dump(progression, f, ensure_ascii=False)
+        # 進捗データの保存
+        progression = {"processed_file_names": processed_file_names}
+        with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
+            json.dump(progression, f, ensure_ascii=False)
