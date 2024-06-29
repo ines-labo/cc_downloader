@@ -13,6 +13,7 @@ import requests
 import zstandard
 from tqdm import tqdm
 from trafilatura import extract
+from trafilatura.meta import reset_caches
 from ulid import ULID
 from warcio.archiveiterator import ArchiveIterator
 
@@ -218,12 +219,15 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
                     result_list.append(tmp_result)
                     is_response_accepted = False
 
+        reset_caches()
         return True, warc_path, result_list
     except Exception as e:
         traceback.print_exc()
         if current_trial > max_trial:
             return False, warc_path, result_list
+        print(f"{warc_path} restart the process.")
         del lang_predictor
+        reset_caches()
         return process_warc(warc_path, current_trial+1)
 
 def signal_handler(sig, frame):
