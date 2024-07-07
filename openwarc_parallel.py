@@ -20,92 +20,17 @@ from trafilatura import extract
 from trafilatura.meta import reset_caches
 from ulid import ULID
 from warcio.archiveiterator import ArchiveIterator
+from multiprocessing import freeze_support
 
 from lang_predictor import FastTextLangPredictor
 from xml_parser import XMLMetadataParser
+
 
 # config.yamlから設定を読み込む関数
 def load_config(config_path='./config.yaml'):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-# 実行時引数の設定
-parser = argparse.ArgumentParser(description='Process WARC files.')
-parser.add_argument('--config', type=str, default='./config.yaml', help='Path to the config file')
-args = parser.parse_args()
-
-# 設定を読み込む
-config = load_config(args.config)
-
-working_dir = config.get('working_dir')
-output_folder_path = config.get('dataset_dir')
-num_proc = config.get('num_proc')
-zstd_chunk_size = config.get('num_zstd_chunk_size')
-temp_file_path = config.get('temp_file_path')
-warc_paths_url = config.get('warc_paths_url')
-
-# 実行時引数の値をprintで出力
-print(f"Working directory: {working_dir}")
-print(f"Dataset directory: {output_folder_path}")
-print(f"Number of processes: {num_proc}")
-print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
-
-# trafilaturaによるwarningを抑制
-logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
-logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
-
-# 前回実行時、処理が途中で中断された場合にデータセットと進捗を復元する
-# 1. warc.pathsファイルの読み込み
-# 2. 進捗の読み込み
-
-# warc.pathsファイルの読み込み
-# gzipファイルのダウンロード
-gzip_file_path = "./warc.paths.gz"
-response = requests.get(warc_paths_url, stream=True)
-total_size = int(response.headers.get('content-length', 0))
-
-with open(gzip_file_path, "wb") as f, tqdm(
-    desc="Downloading",
-    total=total_size,
-    unit='iB',
-    unit_scale=True,
-    unit_divisor=1024,
-) as progress_bar:
-    for data in response.iter_content(chunk_size=1024):
-        size = f.write(data)
-        progress_bar.update(size)
-
-# gzipファイルの展開
-extracted_file_path = "./warc.paths"
-with gzip.open(gzip_file_path, 'rb') as f_in:
-    with open(extracted_file_path, 'wb') as f_out:
-        shutil.copyfileobj(f_in, f_out)
-
-# 展開したファイルの読み込み
-with open(extracted_file_path, "r", encoding="utf-8") as f:
-    warc_paths = f.read().splitlines()
-
-# ダウンロードしたgzipファイルの削除（オプション）
-os.remove(gzip_file_path)
-os.remove(extracted_file_path)
-
-# 進捗の読み込み
-# 進捗データは処理済みセグメントファイル名の配列
-# もし進捗ファイルが読み込めない場合は新しく作成する
-try:
-    with open(os.path.join(working_dir, "progress_parallel.txt"), "r", encoding="utf-8") as f:
-        obj = json.loads(f.read())
-        processed_file_names = obj["processed_file_names"]
-except Exception as e:
-    print(e)
-    print("Create New.")
-    processed_file_names = []
-
-# 処理していないセグメントファイル名の一覧を取得
-cleaned_warcs = []
-for warc_path in warc_paths:
-    if warc_path not in processed_file_names:
-        cleaned_warcs.append(warc_path)
 
 def parse_metadata(byte_array):
     """
@@ -267,6 +192,7 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
         reset_caches()
         return process_warc(warc_path, current_trial+1)
 
+
 def signal_handler(sig, frame):
     """
     SIGINTやSIGTERMが実行されたときに安全にデータを保存して複数プロセスで行っている処理をシャットダウンする。
@@ -339,45 +265,116 @@ def compress(src_path, output_folder_path):
     print("Compressed and saved to", output_file_name)
 
 
-try:
-    # 進捗バー表示のための全体のデータ数
-    total_iterations = len(cleaned_warcs)
-    # 一時ファイルの初期化
-    clear_tmp_file(temp_file_path)
-    # 並列処理の実行
-    with tqdm(total=total_iterations, unit='file', unit_scale=True) as pbar:
-        with ProcessPoolExecutor(max_workers=num_proc) as executor:
-            # InterruptとTerminateのハンドラを設定
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-            try:
-                futures = {executor.submit(process_warc, warc_path): warc_path for warc_path in cleaned_warcs}
-                # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
-                for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-                    result = future.result()  # ここでのresultは(bool, str, list[dict])
-                    if result[0]:
-                        # 一時ファイルに保存
-                        save_refined(result[2], temp_file_path)
-                        # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
-                        if i % zstd_chunk_size == 0:
-                            compress(temp_file_path, output_folder_path)
-                            clear_tmp_file(temp_file_path)
-                        # 処理済みファイル名を追加
-                        processed_file_names.append(result[1])
-                    pbar.update(1)
-            except:
-                traceback.print_exc()
+if __name__ == '__main__':
+    freeze_support()
 
-except Exception as e:
-    traceback.print_exc()
-finally:
-    print("finishing main roop...")
-    if get_file_size(temp_file_path) > 0:
-        compress(temp_file_path, output_folder_path)
+    # 実行時引数の設定
+    parser = argparse.ArgumentParser(description='Process WARC files.')
+    parser.add_argument('--config', type=str, default='./config.yaml', help='Path to the config file')
+    args = parser.parse_args()
 
-        clear_tmp_file(temp_file_path, create_empty=False)
+    # 設定を読み込む
+    config = load_config(args.config)
 
-        # 進捗データの保存
-        progression = {"processed_file_names": processed_file_names}
-        with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
-            json.dump(progression, f, ensure_ascii=False)
+    working_dir = config.get('working_dir')
+    output_folder_path = config.get('dataset_dir')
+    num_proc = config.get('num_proc')
+    zstd_chunk_size = config.get('num_zstd_chunk_size')
+    temp_file_path = config.get('temp_file_path')
+    warc_paths_url = config.get('warc_paths_url')
+
+    # 実行時引数の値をprintで出力
+    print(f"Working directory: {working_dir}")
+    print(f"Dataset directory: {output_folder_path}")
+    print(f"Number of processes: {num_proc}")
+    print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
+
+    # trafilaturaによるwarningを抑制
+    logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
+    logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
+
+    # 前回実行時、処理が途中で中断された場合にデータセットと進捗を復元する
+    # 1. warc.pathsファイルの読み込み
+    # 2. 進捗の読み込み
+
+    # warc.pathsファイルの読み込み
+    # gzipファイルのダウンロード
+    gzip_file_path = "./warc.paths.gz"
+    response = requests.get(warc_paths_url)
+    with open(gzip_file_path, "wb") as f:
+        f.write(response.content)
+
+    # gzipファイルの展開
+    extracted_file_path = "./warc.paths"
+    with gzip.open(gzip_file_path, 'rb') as f_in:
+        with open(extracted_file_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    # 展開したファイルの読み込み
+    with open(extracted_file_path, "r", encoding="utf-8") as f:
+        warc_paths = f.read().splitlines()
+
+    # ダウンロードしたgzipファイルの削除（オプション）
+    os.remove(gzip_file_path)
+    os.remove(extracted_file_path)
+
+    # 進捗の読み込み
+    # 進捗データは処理済みセグメントファイル名の配列
+    # もし進捗ファイルが読み込めない場合は新しく作成する
+    try:
+        with open(os.path.join(working_dir, "progress_parallel.txt"), "r", encoding="utf-8") as f:
+            obj = json.loads(f.read())
+            processed_file_names = obj["processed_file_names"]
+    except Exception as e:
+        print(e)
+        print("Create New.")
+        processed_file_names = []
+
+    # 処理していないセグメントファイル名の一覧を取得
+    cleaned_warcs = []
+    for warc_path in warc_paths:
+        if warc_path not in processed_file_names:
+            cleaned_warcs.append(warc_path)
+
+    try:
+        # 進捗バー表示のための全体のデータ数
+        total_iterations = len(cleaned_warcs)
+        # 一時ファイルの初期化
+        clear_tmp_file(temp_file_path)
+        # 並列処理の実行
+        with tqdm(total=total_iterations, unit='file', unit_scale=True) as pbar:
+            with ProcessPoolExecutor(max_workers=num_proc) as executor:
+                # InterruptとTerminateのハンドラを設定
+                signal.signal(signal.SIGINT, signal_handler)
+                signal.signal(signal.SIGTERM, signal_handler)
+                try:
+                    futures = {executor.submit(process_warc, warc_path): warc_path for warc_path in cleaned_warcs}
+                    # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
+                    for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+                        result = future.result()  # ここでのresultは(bool, str, list[dict])
+                        if result[0]:
+                            # 一時ファイルに保存
+                            save_refined(result[2], temp_file_path)
+                            # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
+                            if i % zstd_chunk_size == 0:
+                                compress(temp_file_path, output_folder_path)
+                                clear_tmp_file(temp_file_path)
+                            # 処理済みファイル名を追加
+                            processed_file_names.append(result[1])
+                        pbar.update(1)
+                except:
+                    traceback.print_exc()
+
+    except Exception as e:
+        traceback.print_exc()
+    finally:
+        print("finishing main roop...")
+        if get_file_size(temp_file_path) > 0:
+            compress(temp_file_path, output_folder_path)
+
+            clear_tmp_file(temp_file_path, create_empty=False)
+
+            # 進捗データの保存
+            progression = {"processed_file_names": processed_file_names}
+            with open(os.path.join(working_dir, "progress_parallel.txt"), "w", encoding="utf-8") as f:
+                json.dump(progression, f, ensure_ascii=False)
