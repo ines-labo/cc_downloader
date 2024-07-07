@@ -1,0 +1,6 @@
+working_dir: /mnt
+dataset_dir: /mnt/dataset
+num_proc: 4
+num_zstd_chunk_size: 1000
+temp_file_path: ./temp_refined_warc_samples.jsonl
+warc_paths_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-18/warc.paths.gz

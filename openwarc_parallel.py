@@ -1,9 +1,11 @@
 import argparse
 import concurrent
+import gzip
 import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -40,6 +42,7 @@ output_folder_path = config.get('dataset_dir')
 num_proc = config.get('num_proc')
 zstd_chunk_size = config.get('num_zstd_chunk_size')
 temp_file_path = config.get('temp_file_path')
+warc_paths_url = config.get('warc_paths_url')
 
 # 実行時引数の値をprintで出力
 print(f"Working directory: {working_dir}")
@@ -56,9 +59,35 @@ logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
 # 2. 進捗の読み込み
 
 # warc.pathsファイルの読み込み
-# これによって全てのwarcファイルの名前が分かる
-with open(os.path.join(working_dir, "data/202404/warc.paths"), "r", encoding="utf-8") as f:
+# gzipファイルのダウンロード
+gzip_file_path = "./warc.paths.gz"
+response = requests.get(warc_paths_url, stream=True)
+total_size = int(response.headers.get('content-length', 0))
+
+with open(gzip_file_path, "wb") as f, tqdm(
+    desc="Downloading",
+    total=total_size,
+    unit='iB',
+    unit_scale=True,
+    unit_divisor=1024,
+) as progress_bar:
+    for data in response.iter_content(chunk_size=1024):
+        size = f.write(data)
+        progress_bar.update(size)
+
+# gzipファイルの展開
+extracted_file_path = "./warc.paths"
+with gzip.open(gzip_file_path, 'rb') as f_in:
+    with open(extracted_file_path, 'wb') as f_out:
+        shutil.copyfileobj(f_in, f_out)
+
+# 展開したファイルの読み込み
+with open(extracted_file_path, "r", encoding="utf-8") as f:
     warc_paths = f.read().splitlines()
+
+# ダウンロードしたgzipファイルの削除（オプション）
+os.remove(gzip_file_path)
+os.remove(extracted_file_path)
 
 # 進捗の読み込み
 # 進捗データは処理済みセグメントファイル名の配列
@@ -262,7 +291,7 @@ def signal_handler(sig, frame):
     print("Progression saved.")
 
     # ProcessPoolExecutorによる処理を中断
-    executor.shutdown(wait=False)
+    executor.shutdown(wait=True)
 
     print("Executor shutdowned.")
     sys.exit(0)
