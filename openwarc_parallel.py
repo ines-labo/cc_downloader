@@ -11,6 +11,7 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor
 
 import requests
+import yaml
 import zstandard
 from tqdm import tqdm
 from trafilatura import extract
@@ -21,30 +22,34 @@ from warcio.archiveiterator import ArchiveIterator
 from lang_predictor import FastTextLangPredictor
 from xml_parser import XMLMetadataParser
 
+# config.yamlから設定を読み込む関数
+def load_config(config_path='./config.yaml'):
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
 # 実行時引数の設定
 parser = argparse.ArgumentParser(description='Process WARC files.')
-parser.add_argument('--working_dir', type=str, help='Path to the working_dir.')
-parser.add_argument('--dataset_dir', type=str, help='Path to the load and save dataset (not common crawl warc.')
-parser.add_argument('--num_proc', type=int, default=8, help='並列実行の数')
-parser.add_argument('--num_zstd_chunk_size', type=int, default=1000, help='1つのzstdファイルに何件含めるか')
+parser.add_argument('--config', type=str, default='./config.yaml', help='Path to the config file')
 args = parser.parse_args()
 
-working_dir = args.working_dir
-output_folder_path = args.dataset_dir
-temp_file_path = "./temp_refined_warc_samples.jsonl"
+# 設定を読み込む
+config = load_config(args.config)
+
+working_dir = config.get('working_dir')
+output_folder_path = config.get('dataset_dir')
+num_proc = config.get('num_proc')
+zstd_chunk_size = config.get('num_zstd_chunk_size')
+temp_file_path = config.get('temp_file_path')
 
 # 実行時引数の値をprintで出力
-print(f"Working directory: {args.working_dir}")
-print(f"Dataset directory: {args.dataset_dir}")
-print(f"Number of processes: {args.num_proc}")
-print(f"Number of ZSTD chunk size: {args.num_zstd_chunk_size}")
+print(f"Working directory: {working_dir}")
+print(f"Dataset directory: {output_folder_path}")
+print(f"Number of processes: {num_proc}")
+print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
 
 # trafilaturaによるwarningを抑制
 logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
 logging.getLogger("trafilatura.core").setLevel(logging.ERROR)
-
-# 1つのzstdに含めたい最大のwarcファイル件数
-zstd_chunk_size = args.num_zstd_chunk_size
 
 # 前回実行時、処理が途中で中断された場合にデータセットと進捗を復元する
 # 1. warc.pathsファイルの読み込み
@@ -312,7 +317,7 @@ try:
     clear_tmp_file(temp_file_path)
     # 並列処理の実行
     with tqdm(total=total_iterations, unit='file', unit_scale=True) as pbar:
-        with ProcessPoolExecutor(max_workers=args.num_proc) as executor:
+        with ProcessPoolExecutor(max_workers=num_proc) as executor:
             # InterruptとTerminateのハンドラを設定
             signal.signal(signal.SIGINT, signal_handler)
             signal.signal(signal.SIGTERM, signal_handler)
