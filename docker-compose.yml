@@ -7,8 +7,9 @@ services:
     working_dir: '/root/'
     environment:
       - HF_TOKEN=${HF_TOKEN}
+      - COMPOSE_HTTP_TIMEOUT=86400
     tty: true
     volumes:
       - .:/root/src
       - /mnt/nvme2n1/dataset:/root/dataset
-    stop_grace_period: 5m
+    stop_grace_period: 30s
