@@ -1,0 +1,12 @@
+data/
+.venv/
+ft_weights/
+.idea/
+*.json
+*.jsonl
+*.txt
+!requirements.txt
+!progress*.txt
+*.md
+docker-compose.yml
+Dockerfile
