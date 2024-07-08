@@ -47,18 +47,20 @@ num_proc: 8
 num_zstd_chunk_size: 1000
 temp_file_path: ./temp_refined_warc_samples.jsonl
 warc_paths_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-18/warc.paths.gz
+s3_credential: /mnt/s3_accessKeys.csv
 fast_text_language_recognition: False
 ```
 
-| 引数名                            | 説明                                    |
-|--------------------------------|---------------------------------------|
-| working_dir                    | 進捗状況を保存するファイルが置かれるフォルダ                |
-| dataset_dir                    | 抽出された圧縮済みデータの保存先フォルダ                  |
-| num_proc                       | 並列実行するプロセス数。                          |
-| num_zstd_chunk_size            | この数のwarcファイルを処理した後にzstd圧縮したデータが保存される。 |
-| temp_file_path                 | 一時ファイルの保存先（ファイル名）                     |
-| warc_paths_url                 | warc.paths.gzのダウンロード先URL              |
-| fast_text_language_recognition | FastTextによる言語判定を利用するかどうか。             |
+| 引数名                           | 説明                                                                           |
+|-------------------------------|------------------------------------------------------------------------------|
+| working_dir                   | 進捗状況を保存するファイルが置かれるフォルダ                                                       |
+| dataset_dir                   | 抽出された圧縮済みデータの保存先フォルダ                                                         |
+| num_proc                      | 並列実行するプロセス数。                                                                 |
+| num_zstd_chunk_size           | この数のwarcファイルを処理した後にzstd圧縮したデータが保存される。                                        |
+| temp_file_path                | 一時ファイルの保存先（ファイル名）                                                            |
+| warc_paths_url                | warc.paths.gzのダウンロード先URL                                                     |
+| s3_credential                 | AWS S3のクレデンシャルcsvファイルのパス。<br/>`Access key ID`と`Secret access key`が保存されているはず。 |
+| fast_text_language_recognition | FastTextによる言語判定を利用するかどうか。                                                    |
 
 ### 実行方法
 
