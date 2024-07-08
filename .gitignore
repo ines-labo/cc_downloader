@@ -4,3 +4,4 @@ data
 output.json
 progress.txt
 progress_parallel.txt
+*accessKeys.csv

@@ -1,5 +1,6 @@
 import argparse
 import concurrent
+import csv
 import gzip
 import json
 import logging
@@ -12,6 +13,7 @@ import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
 
+import boto3
 import requests
 import yaml
 import zstandard
@@ -63,26 +65,25 @@ def parse_metadata(byte_array):
     return metadata
 
 
-def download_warc_file(warc_url, max_retries=5, retry_delay=5):
+def download_warc_file(s3_client, bucket_name, warc_key, max_retries=5, retry_delay=5):
     """
-    WARCファイルをダウンロードする関数
+    S3からWARCファイルをダウンロードする関数
 
-    :param warc_url: ダウンロードするWARCファイルのURL
+    :param s3_client: boto3 S3クライアント
+    :param bucket_name: S3バケット名
+    :param warc_key: WARCファイルのS3キー
     :param max_retries: 最大リトライ回数（デフォルト: 5回）
     :param retry_delay: リトライ間の待機時間（秒）（デフォルト: 5秒）
-    :return: 成功時はresponseオブジェクト、失敗時はNone
+    :return: 成功時はS3オブジェクト、失敗時はNone
     """
     for attempt in range(max_retries):
         try:
-            response = requests.get(warc_url, stream=True)
-            if response.status_code == 200:
-                return response
-            elif response.status_code == 404:
-                raise Exception(f"Invalid WARC URL: {warc_url}")
-            else:
-                print(f"{warc_url}: Got response.status_code == {response.status_code}. Retrying...")
-        except ConnectionError as e:
-            print(f"Connection error: {e}")
+            response = s3_client.get_object(Bucket=bucket_name, Key=warc_key)
+            return response['Body']
+        except s3_client.exceptions.NoSuchKey:
+            raise Exception(f"Invalid WARC key: {warc_key}")
+        except Exception as e:
+            print(f"{warc_key}: Exception {e}. Retrying...")
 
         if attempt < max_retries - 1:
             print(f"Retrying in {retry_delay} seconds...")
@@ -92,19 +93,20 @@ def download_warc_file(warc_url, max_retries=5, retry_delay=5):
     return None
 
 
-def process_warc(warc_path, current_trial=0, max_trial=5):
+def read_csv_to_dict(file_path):
+    result = {}
+    with open(file_path, 'r', encoding='utf-8') as file:
+        csv_reader = csv.reader(file)
+        headers = next(csv_reader)  # ヘッダー行を読み込む
+        for row in csv_reader:
+            for i, column in enumerate(row):
+                result[headers[i]] = column
+    return result
+
+
+def process_warc(bucket_name, warc_key, credential, current_trial=0, max_trial=5):
     """
-    warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
-    処理手順:
-    1. warcファイルをダウンロード。（メモリ上に）
-    2. ダウンロードしたファイルをメモリ上に解凍
-    3. 解凍したデータをイテレートする
-    4. 日本語を対象として配列に追加
-    :param warc_path: warcファイルの場所
-    :return: (is_succeed, warc_path, ja_soup_list)
-    is_succeed: bool - 処理が成功したかどうか。なんらかの例外が発生するとFalseになる
-    warc_path: str - 処理対象のwarcファイル名。入力のwarc_pathと同じ
-    ja_soup_list: list[dict] - 処理済みのデータ
+    S3からWARCファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     """
     def lang_detect(xml_data, metadata_parser: XMLMetadataParser, lang_detector: FastTextLangPredictor):
         meta_description = metadata_parser.parse_description(xml_data)
@@ -118,24 +120,26 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
             return lang_detector.predict(meta_heading.replace("\n", " "))
         return None
 
-    print(f"Start: {warc_path}")
+    # S3クライアントの初期化
+    s3_client = boto3.client('s3', aws_access_key_id=credential["Access key ID"],
+                             aws_secret_access_key=credential["Secret access key"],
+                             region_name='us-east-1')
+
+    print(f"Start: {warc_key}")
     result_list = []
 
     try:
-        # xmlからメタデータをパースするやつ
         metadata_parser = XMLMetadataParser()
-        # fasttextを使用して言語判定するやつ
         lang_predictor = FastTextLangPredictor()
 
-        # WARCファイルのURLを構築
-        warc_url = f"https://data.commoncrawl.org/{warc_path}"
-
-        # WARCファイルをダウンロード
-        response = download_warc_file(warc_url)
+        # S3からWARCファイルをダウンロード
+        warc_object = download_warc_file(s3_client, bucket_name, warc_key)
+        if warc_object is None:
+            return False, warc_key, result_list
 
         is_response_accepted = False
         tmp_result = None
-        for record in ArchiveIterator(response.raw):
+        for record in ArchiveIterator(warc_object):
             if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
                 content = record.content_stream().read()
 
@@ -182,15 +186,15 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
                     is_response_accepted = False
 
         reset_caches()
-        return True, warc_path, result_list
+        return True, warc_key, result_list
     except Exception as e:
         traceback.print_exc()
         if current_trial > max_trial:
-            return False, warc_path, result_list
-        print(f"{warc_path} restart the process.")
+            return False, warc_key, result_list
+        print(f"{warc_key} restart the process.")
         del lang_predictor
         reset_caches()
-        return process_warc(warc_path, current_trial+1)
+        return process_warc(s3_client, bucket_name, warc_key, current_trial+1)
 
 
 def signal_handler(sig, frame):
@@ -282,6 +286,7 @@ if __name__ == '__main__':
     zstd_chunk_size = config.get('num_zstd_chunk_size')
     temp_file_path = config.get('temp_file_path')
     warc_paths_url = config.get('warc_paths_url')
+    s3_credential = read_csv_to_dict(config.get('s3_credential'))
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
@@ -348,7 +353,7 @@ if __name__ == '__main__':
                 signal.signal(signal.SIGINT, signal_handler)
                 signal.signal(signal.SIGTERM, signal_handler)
                 try:
-                    futures = {executor.submit(process_warc, warc_path): warc_path for warc_path in cleaned_warcs}
+                    futures = {executor.submit(process_warc, "commoncrawl", warc_path, s3_credential): warc_path for warc_path in cleaned_warcs}
                     # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
                     for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                         result = future.result()  # ここでのresultは(bool, str, list[dict])
