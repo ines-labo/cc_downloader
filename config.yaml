@@ -5,3 +5,4 @@ num_zstd_chunk_size: 1000
 temp_file_path: ./temp_refined_warc_samples.jsonl
 warc_paths_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2024-18/warc.paths.gz
 s3_credential: /mnt/s3_accessKeys.csv
+fast_text_language_recognition: False
