@@ -4,7 +4,6 @@ import gzip
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import sys
@@ -92,7 +91,7 @@ def download_warc_file(warc_url, max_retries=5, retry_delay=5):
     return None
 
 
-def process_warc(warc_path, current_trial=0, max_trial=5):
+def process_warc(warc_path, use_fast_text=True, current_trial=0, max_trial=5):
     """
     warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     処理手順:
@@ -122,10 +121,13 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
     result_list = []
 
     try:
-        # xmlからメタデータをパースするやつ
-        metadata_parser = XMLMetadataParser()
-        # fasttextを使用して言語判定するやつ
-        lang_predictor = FastTextLangPredictor()
+        metadata_parser = None
+        lang_predictor = None
+        if use_fast_text:
+            # xmlからメタデータをパースするやつ
+            metadata_parser = XMLMetadataParser()
+            # fasttextを使用して言語判定するやつ
+            lang_predictor = FastTextLangPredictor()
 
         # WARCファイルのURLを構築
         warc_url = f"https://data.commoncrawl.org/{warc_path}"
@@ -133,53 +135,58 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
         # WARCファイルをダウンロード
         response = download_warc_file(warc_url)
 
-        is_response_accepted = False
-        tmp_result = None
+        tmp_content = None
         for record in ArchiveIterator(response.raw):
             if record.rec_type == 'response' and record.http_headers.get_header('Content-Type') == 'text/html':
-                content = record.content_stream().read()
+                tmp_content = record.content_stream().read()
 
-                lang = lang_detect(content, metadata_parser, lang_predictor)
-
-                if lang and lang[0][0] == "ja":
-                    # パースに失敗することがある
-                    try:
-                        # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
-                        # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
-                        # deduplicateの効果は不明
-                        json_data = extract(content, output_format='json', target_language="ja",
-                                            deduplicate=True,
-                                            include_formatting=True, include_tables=True)
-                        result = json.loads(json_data)
-                    except:
-                        continue
-
-                    # （Swallowより）本文の文字数が400以下の場合は低品質とみなしてスキップ
-                    if len(result["text"]) < 400:
-                        result["rejected"] = True
-                        result["rejected_reason"] = "Too_Short"
-                    else:
-                        result["rejected"] = False
-                        result["rejected_reason"] = ""
-
-                    result["languages-fasttext"] = lang[0]
-                    result["rec_headers"] = dict(record.rec_headers.headers)
-
-                    tmp_result = result
-                    is_response_accepted = True
-
-            elif is_response_accepted and record.rec_type == 'metadata':
+            elif record.rec_type == 'metadata':
+                # メタデータのパース
                 metadata = parse_metadata(record.content_stream().read())
+
+                # cld2の解析が失敗 or languagesが存在しない場合スキップ
                 if "languages-cld2" not in metadata or "languages" not in metadata["languages-cld2"]:
-                    is_response_accepted = False
                     continue
 
+                # 「日本語が最も多くを占めるページ」ではない場合スキップ
                 languages = metadata["languages-cld2"]["languages"]
                 max_lang_code = max(languages, key=lambda x: x['text-covered'])['code']
-                if max_lang_code == "ja":
-                    tmp_result["metadata"] = metadata
-                    result_list.append(tmp_result)
-                    is_response_accepted = False
+                if max_lang_code != "ja":
+                    continue
+
+                lang_fast_text = None
+                if use_fast_text:
+                    lang_fast_text = lang_detect(tmp_content, metadata_parser, lang_predictor)
+
+                    # FastTextを使用している場合、日本語が検出されなかったらスキップ
+                    if lang_fast_text is None or lang_fast_text[0][0] != "ja":
+                        continue
+
+                try:
+                    # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
+                    # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
+                    # deduplicateの効果は不明
+                    json_data = extract(tmp_content, output_format='json', target_language="ja",
+                                        deduplicate=True,
+                                        include_formatting=True, include_tables=True)
+                    result = json.loads(json_data)
+                except:
+                    continue
+
+                # （Swallowより）本文の文字数が400以下の場合は低品質とみなす（ただしスキップはしない）
+                if len(result["text"]) < 400:
+                    result["rejected"] = True
+                    result["rejected_reason"] = "Too_Short"
+                else:
+                    result["rejected"] = False
+                    result["rejected_reason"] = ""
+
+                result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
+                result["rec_headers"] = dict(record.rec_headers.headers)
+
+                result["metadata"] = metadata
+
+                result_list.append(result)
 
         reset_caches()
         return True, warc_path, result_list
@@ -190,7 +197,7 @@ def process_warc(warc_path, current_trial=0, max_trial=5):
         print(f"{warc_path} restart the process.")
         del lang_predictor
         reset_caches()
-        return process_warc(warc_path, current_trial+1)
+        return process_warc(warc_path, use_fast_text, current_trial+1)
 
 
 def signal_handler(sig, frame):
@@ -282,12 +289,14 @@ if __name__ == '__main__':
     zstd_chunk_size = config.get('num_zstd_chunk_size')
     temp_file_path = config.get('temp_file_path')
     warc_paths_url = config.get('warc_paths_url')
+    use_fast_text = config.get('fast_text_language_recognition')
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
     print(f"Dataset directory: {output_folder_path}")
     print(f"Number of processes: {num_proc}")
     print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
+    print(f"Use fast text for language recognition: {use_fast_text}")
 
     # trafilaturaによるwarningを抑制
     logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
@@ -348,7 +357,7 @@ if __name__ == '__main__':
                 signal.signal(signal.SIGINT, signal_handler)
                 signal.signal(signal.SIGTERM, signal_handler)
                 try:
-                    futures = {executor.submit(process_warc, warc_path): warc_path for warc_path in cleaned_warcs}
+                    futures = {executor.submit(process_warc, warc_path, use_fast_text): warc_path for warc_path in cleaned_warcs}
                     # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
                     for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
                         result = future.result()  # ここでのresultは(bool, str, list[dict])
