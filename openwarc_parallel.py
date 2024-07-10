@@ -53,10 +53,9 @@ def parse_metadata(byte_array):
             value = value.strip()
 
             # valueがJSON形式のテキストならdictionaryに変換
-            try:
-                json_data = json.loads(value)
-                metadata[key] = json_data
-            except json.JSONDecodeError:
+            if value.startswith('{') and value.endswith('}'):
+                metadata[key] = json.loads(value)
+            else:
                 metadata[key] = value
 
     return metadata
