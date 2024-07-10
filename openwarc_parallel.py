@@ -16,9 +16,9 @@ import boto3
 import requests
 import yaml
 import zstandard
+from timeout_timer import timeout
 from tqdm import tqdm
 from trafilatura import extract
-from trafilatura.meta import reset_caches
 from ulid import ULID
 from warcio.archiveiterator import ArchiveIterator
 from multiprocessing import freeze_support
@@ -102,7 +102,7 @@ def read_csv_to_dict(file_path):
     return result
 
 
-def process_warc(bucket_name, warc_key, credential, use_fast_text=True, current_trial=0, max_trial=5):
+def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilatura_timeout=30, current_trial=0, max_trial=5):
     """
     S3からWARCファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     """
@@ -117,6 +117,11 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, current_
         if meta_heading and len(meta_heading) > 10:
             return lang_detector.predict(meta_heading.replace("\n", " "))
         return None
+
+    def extract_data(content):
+        return extract(content, output_format='json', target_language="ja",
+                       deduplicate=True,
+                       include_formatting=True, include_tables=True)
 
     # S3クライアントの初期化
     s3_client = boto3.client('s3', aws_access_key_id=credential["Access key ID"],
@@ -171,9 +176,8 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, current_
                     # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
                     # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
                     # deduplicateの効果は不明
-                    json_data = extract(tmp_content, output_format='json', target_language="ja",
-                                        deduplicate=True,
-                                        include_formatting=True, include_tables=True)
+                    with timeout(trafilatura_timeout, timer="thread"):
+                        json_data = extract_data(tmp_content)
                     result = json.loads(json_data)
                 except:
                     continue
@@ -193,7 +197,6 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, current_
 
                 result_list.append(result)
 
-        reset_caches()
         return True, warc_key, result_list
     except Exception as e:
         traceback.print_exc()
@@ -201,8 +204,7 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, current_
             return False, warc_key, result_list
         print(f"{warc_key} restart the process.")
         del lang_predictor
-        reset_caches()
-        return process_warc(bucket_name, warc_key, credential, use_fast_text, current_trial+1)
+        return process_warc(bucket_name, warc_key, credential, use_fast_text, trafilatura_timeout, current_trial+1)
 
 
 def signal_handler(sig, frame):
@@ -252,6 +254,7 @@ def save_refined(refined_data, path):
     with open(path, mode, encoding="utf-8") as f:
         for item in refined_data:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    del refined_data
 
 
 def clear_tmp_file(path, create_empty=True):
@@ -296,6 +299,7 @@ if __name__ == '__main__':
     warc_paths_url = config.get('warc_paths_url')
     s3_credential = read_csv_to_dict(config.get('s3_credential'))
     use_fast_text = config.get('fast_text_language_recognition')
+    trafilatura_timeout = config.get('trafilatura_timeout')
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
@@ -363,7 +367,7 @@ if __name__ == '__main__':
                 signal.signal(signal.SIGINT, signal_handler)
                 signal.signal(signal.SIGTERM, signal_handler)
                 try:
-                    futures = {executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text): warc_path for warc_path in cleaned_warcs}
+                    futures = {executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text, trafilatura_timeout): warc_path for warc_path in cleaned_warcs}
 
                     # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
                     for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
