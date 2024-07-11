@@ -349,6 +349,7 @@ if __name__ == '__main__':
         if warc_path not in processed_file_names:
             cleaned_warcs.append(warc_path)
 
+
     try:
         # 進捗バー表示のための全体のデータ数
         total_iterations = len(cleaned_warcs)
@@ -361,20 +362,22 @@ if __name__ == '__main__':
                 signal.signal(signal.SIGINT, signal_handler)
                 signal.signal(signal.SIGTERM, signal_handler)
                 try:
-                    futures = {executor.submit(process_warc, warc_path, use_fast_text, trafilatura_timeout): warc_path for warc_path in cleaned_warcs}
-                    # tqdmで進捗を表示したかったので処理が終わり次第実行されるやつを使う
-                    for i, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+                    def on_process_finished(future):
+                        pbar.update(1)
                         result = future.result()  # ここでのresultは(bool, str, list[dict])
                         if result[0]:
                             # 一時ファイルに保存
                             save_refined(result[2], temp_file_path)
                             # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
-                            if i % zstd_chunk_size == 0:
+                            if pbar.n % zstd_chunk_size == 0:
                                 compress(temp_file_path, output_folder_path)
                                 clear_tmp_file(temp_file_path)
                             # 処理済みファイル名を追加
                             processed_file_names.append(result[1])
-                        pbar.update(1)
+
+                    for warc_path in cleaned_warcs:
+                        future = executor.submit(process_warc, warc_path, use_fast_text, trafilatura_timeout, 0, 5)
+                        future.add_done_callback(on_process_finished)
                 except:
                     traceback.print_exc()
 
