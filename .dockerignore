@@ -2,6 +2,7 @@ data/
 .venv/
 ft_weights/
 .idea/
+dataset/
 *.json
 *.jsonl
 *.txt
@@ -10,3 +11,4 @@ ft_weights/
 *.md
 docker-compose.yml
 Dockerfile
+temp_refined_warc_samples.jsonl
