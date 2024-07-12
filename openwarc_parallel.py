@@ -314,6 +314,7 @@ if __name__ == '__main__':
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
     print(f"Dataset directory: {output_folder_path}")
+    print("Note: If you are using Docker, these paths are within the container where this program is running :)")
     print(f"Number of processes: {num_proc}")
     print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
     print(f"Use fast text for language recognition: {use_fast_text}")
