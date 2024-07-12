@@ -317,6 +317,8 @@ if __name__ == '__main__':
     print(f"Number of processes: {num_proc}")
     print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
     print(f"Use fast text for language recognition: {use_fast_text}")
+    print(f"Trafilatura text extracting: {enable_text_extraction_from_html}")
+    print(f"\tTimeout after: {trafilatura_timeout} secs")
 
     # trafilaturaによるwarningを抑制
     logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
