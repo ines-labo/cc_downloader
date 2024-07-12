@@ -1,5 +1,7 @@
 import argparse
 import csv
+import base64
+import concurrent
 import gzip
 import json
 import logging
@@ -101,7 +103,7 @@ def read_csv_to_dict(file_path):
     return result
 
 
-def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilatura_timeout=30, current_trial=0, max_trial=5):
+def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilatura_timeout=30, current_trial=0, max_trial=5, enable_text_extraction_from_html=True):
     """
     S3からWARCファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     """
@@ -150,6 +152,9 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
                 tmp_content = record.content_stream().read()
 
             elif record.rec_type == 'metadata':
+                if tmp_content is None:
+                    continue
+
                 # メタデータのパース
                 metadata = parse_metadata(record.content_stream().read())
 
@@ -171,30 +176,34 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
                     if lang_fast_text is None or lang_fast_text[0][0] != "ja":
                         continue
 
-                try:
-                    # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
-                    # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
-                    # deduplicateの効果は不明
-                    with timeout(trafilatura_timeout, timer="thread"):
-                        json_data = extract_data(tmp_content)
-                    result = json.loads(json_data)
-                except:
-                    continue
+                if enable_text_extraction_from_html:
+                    try:
+                        # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
+                        # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
+                        # deduplicateの効果は不明
+                        with timeout(trafilatura_timeout, timer="thread"):
+                            json_data = extract_data(tmp_content)
+                        result = json.loads(json_data)
+                    except:
+                        continue
 
-                # （Swallowより）本文の文字数が400以下の場合は低品質とみなす（ただしスキップはしない）
-                if len(result["text"]) < 400:
-                    result["rejected"] = True
-                    result["rejected_reason"] = "Too_Short"
+                    # （Swallowより）本文の文字数が400以下の場合は低品質とみなす（ただしスキップはしない）
+                    if len(result["text"]) < 400:
+                        result["rejected"] = True
+                        result["rejected_reason"] = "Too_Short"
+                    else:
+                        result["rejected"] = False
+                        result["rejected_reason"] = ""
+
+                    result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
                 else:
-                    result["rejected"] = False
-                    result["rejected_reason"] = ""
+                    result = {"raw_data": base64.b64encode(tmp_content).decode('utf-8'), "encoding": "base64"}
 
-                result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
                 result["rec_headers"] = dict(record.rec_headers.headers)
-
                 result["metadata"] = metadata
 
                 result_list.append(result)
+                tmp_content = None
 
         return True, warc_key, result_list
     except Exception as e:
@@ -203,7 +212,17 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
             return False, warc_key, result_list
         print(f"{warc_key} restart the process.")
         del lang_predictor
-        return process_warc(bucket_name, warc_key, credential, use_fast_text, trafilatura_timeout, current_trial+1)
+
+        return process_warc(
+            bucket_name=bucket_name,
+            warc_key=warc_key,
+            credential=credential,
+            use_fast_text=use_fast_text,
+            trafilatura_timeout=trafilatura_timeout,
+            current_trial=current_trial+1,
+            max_trial=max_trial,
+            enable_text_extraction_from_html=enable_text_extraction_from_html
+        )
 
 
 def signal_handler(sig, frame):
@@ -299,13 +318,17 @@ if __name__ == '__main__':
     s3_credential = read_csv_to_dict(config.get('s3_credential'))
     use_fast_text = config.get('fast_text_language_recognition')
     trafilatura_timeout = config.get('trafilatura_timeout')
+    enable_text_extraction_from_html = config.get('enable_text_extraction_from_html')
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
     print(f"Dataset directory: {output_folder_path}")
+    print("Note: If you are using Docker, these paths are within the container where this program is running :)")
     print(f"Number of processes: {num_proc}")
     print(f"Number of ZSTD chunk size: {zstd_chunk_size}")
     print(f"Use fast text for language recognition: {use_fast_text}")
+    print(f"Trafilatura text extracting: {enable_text_extraction_from_html}")
+    print(f"\tTimeout after: {trafilatura_timeout} secs")
 
     # trafilaturaによるwarningを抑制
     logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
@@ -380,7 +403,7 @@ if __name__ == '__main__':
                             processed_file_names.append(result[1])
 
                     for warc_path in cleaned_warcs:
-                        future = executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text, trafilatura_timeout, 0, 5)
+                        future = executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text, trafilatura_timeout, 0, 5, enable_text_extraction_from_html)
                         future.add_done_callback(on_process_finished)
                 except:
                     traceback.print_exc()
