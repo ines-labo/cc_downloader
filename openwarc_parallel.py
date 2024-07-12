@@ -191,7 +191,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
 
                     result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
                 else:
-                    result = {"raw_data": base64.b64encode(tmp_content).decode('ascii'), "encoding": "base64"}
+                    result = {"raw_data": base64.b64encode(tmp_content).decode('utf-8'), "encoding": "base64"}
 
                 result["rec_headers"] = dict(record.rec_headers.headers)
                 result["metadata"] = metadata
