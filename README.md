@@ -53,17 +53,17 @@ enable_text_extraction_from_html: False
 trafilatura_timeout: 30
 ```
 
-| 引数名                             | 説明                                             |
-|---------------------------------|------------------------------------------------|
-| working_dir                     | 進捗状況を保存するファイルが置かれるフォルダ                         |
-| dataset_dir                     | 抽出された圧縮済みデータの保存先フォルダ                           |
-| num_proc                        | 並列実行するプロセス数。                                   |
-| num_zstd_chunk_size             | この数のwarcファイルを処理した後にzstd圧縮したデータが保存される。          |
-| temp_file_path                  | 一時ファイルの保存先（ファイル名）                              |
-| warc_paths_url                  | warc.paths.gzのダウンロード先URL                       |
-| fast_text_language_recognition  | FastTextによる言語判定を利用するかどうか。                      |
-| enable_text_extraction_from_html | TrafilaturaによるHTMLからのテキスト抽出を行うかどうか。            |
-| trafilatura_timeout             | Trafilaturaのテキスト抽出にこの秒数以上必要とする場合、このhtmlをスキップする |
+| 引数名                             | 説明                                                                          |
+|---------------------------------|-----------------------------------------------------------------------------|
+| working_dir                     | 進捗状況を保存するファイルが置かれるフォルダ                                                      |
+| dataset_dir                     | 抽出された圧縮済みデータの保存先フォルダ                                                        |
+| num_proc                        | 並列実行するプロセス数。                                                                |
+| num_zstd_chunk_size             | この数のwarcファイルを処理した後にzstd圧縮したデータが保存される。                                       |
+| temp_file_path                  | 一時ファイルの保存先（ファイル名）                                                           |
+| warc_paths_url                  | warc.paths.gzのダウンロード先URL                                                    |
+| fast_text_language_recognition  | FastTextによる言語判定を利用するかどうか。                                                   |
+| enable_text_extraction_from_html | TrafilaturaによるHTMLからのテキスト抽出を行うかどうか。                                         |
+| trafilatura_timeout             | Trafilaturaのテキスト抽出にこの秒数以上必要とする場合、処理を中断し、テキストではなくbase64エンコーディングされたデータを格納します。 |
 
 ### 実行方法
 
