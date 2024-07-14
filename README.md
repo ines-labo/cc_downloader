@@ -65,7 +65,7 @@ trafilatura_timeout: 30
 | s3_credential                 | AWS S3のクレデンシャルcsvファイルのパス。<br/>`Access key ID`と`Secret access key`が保存されているはず。 |
 | fast_text_language_recognition | FastTextによる言語判定を利用するかどうか。                                                    |
 | enable_text_extraction_from_html | TrafilaturaによるHTMLからのテキスト抽出を行うかどうか。                                         |
-| trafilatura_timeout             | Trafilaturaのテキスト抽出にこの秒数以上必要とする場合、処理を中断し、テキストではなくbase64エンコーディングされたデータを格納します。 |
+| trafilatura_timeout             | Trafilaturaのテキスト抽出にこの秒数以上必要とする場合、このhtmlをスキップする |
 
 ### 実行方法
 

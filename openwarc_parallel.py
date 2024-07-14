@@ -12,13 +12,12 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
-from json import JSONDecodeError
 
 import boto3
 import requests
 import yaml
 import zstandard
-from timeout_timer import timeout, TimeoutInterrupt
+from timeout_timer import timeout
 from tqdm import tqdm
 from trafilatura import extract
 from ulid import ULID
@@ -134,8 +133,6 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
     result_list = []
 
     try:
-        compressor = zstandard.ZstdCompressor()
-
         metadata_parser = None
         lang_predictor = None
         if use_fast_text:
@@ -180,36 +177,27 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
                         continue
 
                 if enable_text_extraction_from_html:
-                    # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
-                    # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
-                    # deduplicateの効果は不明
                     try:
+                        # 本文の抽出にはtrafilaturaを用いる。（抽出精度が高いため）
+                        # include_formatting=Trueにすることで、抽出したテキストがMarkdown形式になる（h2タグが見出しになったり、テーブルがパースされたり）
+                        # deduplicateの効果は不明
                         with timeout(trafilatura_timeout, timer="thread"):
                             json_data = extract_data(tmp_content)
-                            result = json.loads(json_data)
-
-                            # （Swallowより）本文の文字数が400以下の場合は低品質とみなす（ただしスキップはしない）
-                            if len(result["text"]) < 400:
-                                result["rejected"] = True
-                                result["rejected_reason"] = "Too_Short"
-                            else:
-                                result["rejected"] = False
-                                result["rejected_reason"] = ""
-
-                            # FastTextの結果を格納
-                            result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
-                    except TimeoutInterrupt:
-                        print(f"{warc_path}: Timeout triggered.")
-                        compressed = compressor.compress(tmp_content)
-                        result = {"raw_data": base64.b64encode(compressed).decode('utf-8'),
-                                  "encoding": "base64",
-                                  "timeout": True,
-                                  "timeout_secs": trafilatura_timeout}
+                        result = json.loads(json_data)
                     except:
                         continue
+
+                    # （Swallowより）本文の文字数が400以下の場合は低品質とみなす（ただしスキップはしない）
+                    if len(result["text"]) < 400:
+                        result["rejected"] = True
+                        result["rejected_reason"] = "Too_Short"
+                    else:
+                        result["rejected"] = False
+                        result["rejected_reason"] = ""
+
+                    result["languages-fasttext"] = lang_fast_text[0] if lang_fast_text else None
                 else:
-                    compressed = compressor.compress(tmp_content)
-                    result = {"raw_data": base64.b64encode(compressed).decode('utf-8'), "encoding": "base64"}
+                    result = {"raw_data": base64.b64encode(tmp_content).decode('utf-8'), "encoding": "base64"}
 
                 result["rec_headers"] = dict(record.rec_headers.headers)
                 result["metadata"] = metadata
