@@ -71,7 +71,9 @@ def download_warc_file(warc_url, max_retries=5, retry_delay=5):
     :param retry_delay: リトライ間の待機時間（秒）（デフォルト: 5秒）
     :return: 成功時はresponseオブジェクト、失敗時はNone
     """
-    for attempt in range(max_retries):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             response = requests.get(warc_url, stream=True)
             if response.status_code == 200:
@@ -83,15 +85,17 @@ def download_warc_file(warc_url, max_retries=5, retry_delay=5):
         except ConnectionError as e:
             print(f"Connection error: {e}")
 
-        if attempt < max_retries - 1:
-            print(f"Retrying in {retry_delay} seconds...")
-            time.sleep(retry_delay)
+        if max_retries > 0 and attempt >= max_retries:
+            break
+
+        print(f"Retrying in {retry_delay ** attempt} seconds...")
+        time.sleep(retry_delay ** attempt)
 
     print(f"Failed to download WARC file after {max_retries} attempts. Aborting.")
     return None
 
 
-def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_trial=0, max_trial=5, enable_text_extraction_from_html=True):
+def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_trial=0, process_max_trial=-1, dl_max_trial=-1, enable_text_extraction_from_html=True):
     """
     warcファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     処理手順:
@@ -138,7 +142,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
         warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
         # WARCファイルをダウンロード
-        response = download_warc_file(warc_url)
+        response = download_warc_file(warc_url, max_retries=dl_max_trial)
 
         tmp_content = None
         for record in ArchiveIterator(response.raw):
@@ -195,6 +199,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
 
                 result["rec_headers"] = dict(record.rec_headers.headers)
                 result["metadata"] = metadata
+                result["warc_path"] = warc_path
 
                 result_list.append(result)
                 tmp_content = None
@@ -202,7 +207,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
         return True, warc_path, result_list
     except Exception as e:
         traceback.print_exc()
-        if current_trial > max_trial:
+        if process_max_trial > 0 and current_trial > process_max_trial:
             return False, warc_path, result_list
         print(f"{warc_path} restart the process.")
         del lang_predictor
@@ -212,7 +217,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
             use_fast_text=use_fast_text,
             trafilatura_timeout=trafilatura_timeout,
             current_trial=current_trial+1,
-            max_trial=max_trial,
+            process_max_trial=process_max_trial,
             enable_text_extraction_from_html=enable_text_extraction_from_html
         )
 
@@ -310,6 +315,8 @@ if __name__ == '__main__':
     use_fast_text = config.get('fast_text_language_recognition')
     trafilatura_timeout = config.get('trafilatura_timeout')
     enable_text_extraction_from_html = config.get('enable_text_extraction_from_html')
+    dl_max_trial = config.get('download_max_trial')
+    warc_max_trial = config.get('process_warc_max_trial')
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
@@ -320,6 +327,7 @@ if __name__ == '__main__':
     print(f"Use fast text for language recognition: {use_fast_text}")
     print(f"Trafilatura text extracting: {enable_text_extraction_from_html}")
     print(f"\tTimeout after: {trafilatura_timeout} secs")
+    print(f"Max trials:\n\tDownload: {dl_max_trial}\n\tWarc Processing: {warc_max_trial}")
 
     # trafilaturaによるwarningを抑制
     logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
@@ -368,7 +376,6 @@ if __name__ == '__main__':
         if warc_path not in processed_file_names:
             cleaned_warcs.append(warc_path)
 
-
     try:
         # 進捗バー表示のための全体のデータ数
         total_iterations = len(cleaned_warcs)
@@ -395,7 +402,7 @@ if __name__ == '__main__':
                             processed_file_names.append(result[1])
 
                     for warc_path in cleaned_warcs:
-                        future = executor.submit(process_warc, warc_path, use_fast_text, trafilatura_timeout, 0, 5, enable_text_extraction_from_html)
+                        future = executor.submit(process_warc, warc_path, use_fast_text, trafilatura_timeout, 0, warc_max_trial, dl_max_trial, enable_text_extraction_from_html)
                         future.add_done_callback(on_process_finished)
                 except:
                     traceback.print_exc()
