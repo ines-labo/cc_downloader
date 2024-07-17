@@ -394,12 +394,17 @@ if __name__ == '__main__':
                         if result[0]:
                             # 一時ファイルに保存
                             save_refined(result[2], temp_file_path)
+                            # 処理済みファイル名を追加
+                            processed_file_names.append(result[1])
                             # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
                             if pbar.n % zstd_chunk_size == 0:
                                 compress(temp_file_path, output_folder_path)
+                                # 進捗データの保存
+                                progression = {"processed_file_names": processed_file_names}
+                                with open(os.path.join(working_dir, "progress_parallel.txt"), "w",
+                                          encoding="utf-8") as f:
+                                    json.dump(progression, f, ensure_ascii=False)
                                 clear_tmp_file(temp_file_path)
-                            # 処理済みファイル名を追加
-                            processed_file_names.append(result[1])
 
                     for warc_path in cleaned_warcs:
                         future = executor.submit(process_warc, warc_path, use_fast_text, trafilatura_timeout, 0, warc_max_trial, dl_max_trial, enable_text_extraction_from_html)
