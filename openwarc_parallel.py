@@ -75,7 +75,9 @@ def download_warc_file(s3_client, bucket_name, warc_key, max_retries=5, retry_de
     :param retry_delay: リトライ間の待機時間（秒）（デフォルト: 5秒）
     :return: 成功時はS3オブジェクト、失敗時はNone
     """
-    for attempt in range(max_retries):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             response = s3_client.get_object(Bucket=bucket_name, Key=warc_key)
             return response['Body']
@@ -84,9 +86,11 @@ def download_warc_file(s3_client, bucket_name, warc_key, max_retries=5, retry_de
         except Exception as e:
             print(f"{warc_key}: Exception {e}. Retrying...")
 
-        if attempt < max_retries - 1:
-            print(f"Retrying in {retry_delay} seconds...")
-            time.sleep(retry_delay)
+        if max_retries > 0 and attempt >= max_retries:
+            break
+
+        print(f"Retrying in {retry_delay ** attempt} seconds...")
+        time.sleep(retry_delay ** attempt)
 
     print(f"Failed to download WARC file after {max_retries} attempts. Aborting.")
     return None
@@ -103,7 +107,7 @@ def read_csv_to_dict(file_path):
     return result
 
 
-def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilatura_timeout=30, current_trial=0, max_trial=5, enable_text_extraction_from_html=True):
+def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilatura_timeout=30, current_trial=0, process_max_trial=-1, dl_max_trial=-1, enable_text_extraction_from_html=True):
     """
     S3からWARCファイルを読み込んで、日本語ページかどうかの簡単なフィルタリングを行う。
     """
@@ -142,7 +146,7 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
             lang_predictor = FastTextLangPredictor()
 
         # S3からWARCファイルをダウンロード
-        warc_object = download_warc_file(s3_client, bucket_name, warc_key)
+        warc_object = download_warc_file(s3_client, bucket_name, warc_key, max_retries=dl_max_trial)
         if warc_object is None:
             return False, warc_key, result_list
 
@@ -201,6 +205,7 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
 
                 result["rec_headers"] = dict(record.rec_headers.headers)
                 result["metadata"] = metadata
+                result["warc_path"] = warc_path
 
                 result_list.append(result)
                 tmp_content = None
@@ -208,9 +213,11 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
         return True, warc_key, result_list
     except Exception as e:
         traceback.print_exc()
-        if current_trial > max_trial:
+
+        if process_max_trial > 0 and current_trial > process_max_trial:
             return False, warc_key, result_list
         print(f"{warc_key} restart the process.")
+
         del lang_predictor
 
         return process_warc(
@@ -220,7 +227,7 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
             use_fast_text=use_fast_text,
             trafilatura_timeout=trafilatura_timeout,
             current_trial=current_trial+1,
-            max_trial=max_trial,
+            process_max_trial=process_max_trial,
             enable_text_extraction_from_html=enable_text_extraction_from_html
         )
 
@@ -319,6 +326,8 @@ if __name__ == '__main__':
     use_fast_text = config.get('fast_text_language_recognition')
     trafilatura_timeout = config.get('trafilatura_timeout')
     enable_text_extraction_from_html = config.get('enable_text_extraction_from_html')
+    dl_max_trial = config.get('download_max_trial')
+    warc_max_trial = config.get('process_warc_max_trial')
 
     # 実行時引数の値をprintで出力
     print(f"Working directory: {working_dir}")
@@ -329,6 +338,7 @@ if __name__ == '__main__':
     print(f"Use fast text for language recognition: {use_fast_text}")
     print(f"Trafilatura text extracting: {enable_text_extraction_from_html}")
     print(f"\tTimeout after: {trafilatura_timeout} secs")
+    print(f"Max trials:\n\tDownload: {dl_max_trial}\n\tWarc Processing: {warc_max_trial}")
 
     # trafilaturaによるwarningを抑制
     logging.getLogger("trafilatura.utils").setLevel(logging.ERROR)
@@ -395,15 +405,20 @@ if __name__ == '__main__':
                         if result[0]:
                             # 一時ファイルに保存
                             save_refined(result[2], temp_file_path)
+                            # 処理済みファイル名を追加
+                            processed_file_names.append(result[1])
                             # もし処理したファイル数がchunk sizeになったらzstd圧縮して保存
                             if pbar.n % zstd_chunk_size == 0:
                                 compress(temp_file_path, output_folder_path)
+                                # 進捗データの保存
+                                progression = {"processed_file_names": processed_file_names}
+                                with open(os.path.join(working_dir, "progress_parallel.txt"), "w",
+                                          encoding="utf-8") as f:
+                                    json.dump(progression, f, ensure_ascii=False)
                                 clear_tmp_file(temp_file_path)
-                            # 処理済みファイル名を追加
-                            processed_file_names.append(result[1])
 
                     for warc_path in cleaned_warcs:
-                        future = executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text, trafilatura_timeout, 0, 5, enable_text_extraction_from_html)
+                        future = executor.submit(process_warc, "commoncrawl", warc_path, s3_credential, use_fast_text, trafilatura_timeout, 0, warc_max_trial, dl_max_trial, enable_text_extraction_from_html)
                         future.add_done_callback(on_process_finished)
                 except:
                     traceback.print_exc()
