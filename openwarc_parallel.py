@@ -88,8 +88,8 @@ def download_warc_file(warc_url, max_retries=5, retry_delay=5):
         if max_retries > 0 and attempt >= max_retries:
             break
 
-        print(f"Retrying in {retry_delay ** attempt} seconds...")
-        time.sleep(retry_delay ** attempt)
+        print(f"Retrying in {retry_delay} seconds...")
+        time.sleep(retry_delay)
 
     print(f"Failed to download WARC file after {max_retries} attempts. Aborting.")
     return None
@@ -142,7 +142,7 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
         warc_url = f"https://data.commoncrawl.org/{warc_path}"
 
         # WARCファイルをダウンロード
-        response = download_warc_file(warc_url, max_retries=dl_max_trial)
+        response = download_warc_file(warc_url, max_retries=dl_max_trial, retry_delay=1)
 
         tmp_content = None
         for record in ArchiveIterator(response.raw):
@@ -211,6 +211,8 @@ def process_warc(warc_path, use_fast_text=True, trafilatura_timeout=30, current_
             return False, warc_path, result_list
         print(f"{warc_path} restart the process.")
         del lang_predictor
+
+        time.sleep(1)
 
         return process_warc(
             warc_path=warc_path,
