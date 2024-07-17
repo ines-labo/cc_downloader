@@ -89,8 +89,8 @@ def download_warc_file(s3_client, bucket_name, warc_key, max_retries=5, retry_de
         if max_retries > 0 and attempt >= max_retries:
             break
 
-        print(f"Retrying in {retry_delay ** attempt} seconds...")
-        time.sleep(retry_delay ** attempt)
+        print(f"Retrying in {retry_delay} seconds...")
+        time.sleep(retry_delay)
 
     print(f"Failed to download WARC file after {max_retries} attempts. Aborting.")
     return None
@@ -146,7 +146,7 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
             lang_predictor = FastTextLangPredictor()
 
         # S3からWARCファイルをダウンロード
-        warc_object = download_warc_file(s3_client, bucket_name, warc_key, max_retries=dl_max_trial)
+        warc_object = download_warc_file(s3_client, bucket_name, warc_key, max_retries=dl_max_trial, retry_delay=1)
         if warc_object is None:
             return False, warc_key, result_list
 
@@ -219,6 +219,8 @@ def process_warc(bucket_name, warc_key, credential, use_fast_text=True, trafilat
         print(f"{warc_key} restart the process.")
 
         del lang_predictor
+
+        time.sleep(1)
 
         return process_warc(
             bucket_name=bucket_name,
